@@ -132,6 +132,7 @@ const uint32_t STACK_START = SRAM_END;
 extern "C" {
 extern void Reset_Handler(void) __attribute__((weak));
 void Default_Handler(void) __attribute__((weak));
+void PendSV_Handler(void);
 }
 
 void Default_Handler(void)

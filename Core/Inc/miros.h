@@ -34,6 +34,9 @@ void OS_run(void);
 /* blocking delay */
 void OS_delay(uint32_t ticks);
 
+/* yields CPU to next thread */
+void yield(void);
+
 /* process all timeouts */
 void OS_tick(void);
 
@@ -44,6 +47,20 @@ void OSThread_start(
     OSThread *me,
     OSThreadHandler threadHandler,
     void *stkSto, uint32_t stkSize);
+
+class OSSemaphore {
+private:
+    uint32_t counter;
+    uint32_t waitSet; // Fila de bloqueio usando mapa de bits
+
+public:
+    // Construtor: inicializa o contador e garante que a fila comece vazia
+    explicit OSSemaphore(uint32_t initial_count = 0);
+
+    void wait();   // Função para tentar adquirir o semáforo (P / Acquire)
+    void signal(); // Função para liberar/sinalizar o semáforo (V / Release)
+};
+
 
 }
 

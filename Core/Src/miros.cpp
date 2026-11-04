@@ -120,6 +120,13 @@ void OS_delay(uint32_t ticks) {
     __asm volatile ("cpsie i");
  }
 
+
+void yield(void) {
+	__asm volatile ("cpsid i");
+    OS_sched();
+    __asm volatile ("cpsie i");
+ }
+
 void OSThread_start(
     OSThread *me,
     OSThreadHandler threadHandler,
@@ -231,6 +238,52 @@ void OS_onIdle(void) {
 #endif
 }
 
+OSSemaphore::OSSemaphore(uint32_t initial_count) {
+    counter = initial_count;
+    waitSet = 0U;
+}
+
+void OSSemaphore::wait() {
+    __asm volatile ("cpsid i"); // Início da seção crítica
+
+    if (counter > 0U) {
+        counter--; // Tem crédito: consome e continua rodando
+    } else {
+        // Sem créditos: bloqueia a thread atual
+        // 1. Tira do estado de "Pronta" no sistema operacional
+        OS_readySet &= ~(1U << (OS_currIdx - 1U));
+
+        // 2. Coloca o bit desta thread na fila de espera deste semáforo específico
+        waitSet |= (1U << (OS_currIdx - 1U));
+
+        // 3. Chama o escalonador para passar a CPU para outra tarefa
+        OS_sched();
+    }
+
+    __asm volatile ("cpsie i"); // Fim da seção crítica
+}
+
+void OSSemaphore::signal() {
+    __asm volatile ("cpsid i"); // Início da seção crítica
+
+    if (waitSet != 0U) {
+        // Se waitSet é diferente de 0, tem pelo menos uma thread bloqueada aqui.
+        // O truque bitwise (waitSet & ~(waitSet - 1U)) isola apenas o primeiro bit que for 1.
+        uint32_t waitingThreadBit = waitSet & ~(waitSet - 1U);
+
+        // 1. Remove a thread da fila de espera do semáforo
+        waitSet &= ~waitingThreadBit;
+
+        // 2. Devolve a thread para o estado de "Pronta" no OS global
+        OS_readySet |= waitingThreadBit;
+    } else {
+        // Ninguém está esperando, apenas guarda o crédito para o futuro
+        counter++;
+    }
+
+    __asm volatile ("cpsie i"); // Fim da seção crítica
+}
+
 }//fim namespace
 
 void Q_onAssert(char const *module, int loc) {
@@ -241,6 +294,7 @@ void Q_onAssert(char const *module, int loc) {
 }
 
 /***********************************************/
+extern "C"
 __attribute__ ((naked, optimize("-fno-stack-protector")))
 void PendSV_Handler(void) {
 __asm volatile (

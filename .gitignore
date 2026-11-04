@@ -1,6 +1,7 @@
 /Debug/*
 /Release/*
 build
+renode_command.txt
 
 # GIT
 !.gitignore
