@@ -32,6 +32,9 @@
 #include "miros.h"
 #include "qassert.h"
 #include "stm32g4xx.h"
+extern "C" {
+#include "SEGGER_SYSVIEW.h"
+}
 
 Q_DEFINE_THIS_FILE
 
@@ -80,7 +83,10 @@ void OS_sched(void) {
 
     /* trigger PendSV, if needed */
     if(OS_next != OS_curr){
-    	*(uint32_t volatile *)0xE000ED04 = (1U << 28);
+        if (OS_next == &idleThread) { SEGGER_SYSVIEW_OnIdle(); }
+        else { SEGGER_SYSVIEW_OnTaskStartExec(reinterpret_cast<uint32_t>(OS_next)); }
+
+        *(uint32_t volatile *)0xE000ED04 = (1U << 28);
     }
 }
 
@@ -103,6 +109,7 @@ void OS_tick(void) {
 			OS_thread[n]->timeout--;			/* decrease the timeout */
 			if(OS_thread[n]->timeout == 0U){
 				OS_readySet |= (1U << (n-1U));	/* if the thread is ready mask the corresponding bit */
+				SEGGER_SYSVIEW_OnTaskStartReady(reinterpret_cast<uint32_t>(OS_thread[n]));
 			}
 		}
 	}
@@ -116,6 +123,7 @@ void OS_delay(uint32_t ticks) {
 
     OS_curr->timeout = ticks;
     OS_readySet &= ~(1U << (OS_currIdx - 1U));
+    SEGGER_SYSVIEW_OnTaskStopReady(reinterpret_cast<uint32_t>(OS_curr), 1U);   // 1 = delay
     OS_sched();
     __asm volatile ("cpsie i");
  }
@@ -226,6 +234,8 @@ void SystemClock_Config(void)
 void OS_onStartup(void) {
 	SystemClock_Config();
     SystemCoreClockUpdate();
+    SEGGER_SYSVIEW_Conf();
+    SEGGER_SYSVIEW_Start();
     SysTick_Config(SystemCoreClock / TICKS_PER_SEC);
 
     /* set the SysTick interrupt priority (highest) */
@@ -256,6 +266,8 @@ void OSSemaphore::wait() {
         // 2. Coloca o bit desta thread na fila de espera deste semáforo específico
         waitSet |= (1U << (OS_currIdx - 1U));
 
+        SEGGER_SYSVIEW_OnTaskStopReady(reinterpret_cast<uint32_t>(OS_curr), 2U);   // 2 = semáforo
+
         // 3. Chama o escalonador para passar a CPU para outra tarefa
         OS_sched();
     }
@@ -276,6 +288,7 @@ void OSSemaphore::signal() {
 
         // 2. Devolve a thread para o estado de "Pronta" no OS global
         OS_readySet |= waitingThreadBit;
+        SEGGER_SYSVIEW_OnTaskStartReady(reinterpret_cast<uint32_t>(OS_thread[__builtin_ctz(waitingThreadBit) + 1U]));
     } else {
         // Ninguém está esperando, apenas guarda o crédito para o futuro
         counter++;
@@ -337,4 +350,15 @@ __asm volatile (
     /* return to the next thread */
     "  BX            lr                \n"
     );
+}
+
+
+extern "C" void os_sendTaskList(void) {
+    for (uint8_t i = 0; i < rtos::OS_threadNum; ++i) {
+        SEGGER_SYSVIEW_TASKINFO info = {};
+        info.TaskID = reinterpret_cast<uint32_t>(rtos::OS_thread[i]);
+        info.sName  = rtos::OS_thread[i]->name;
+        info.Prio   = i;
+        SEGGER_SYSVIEW_SendTaskInfo(&info);
+    }
 }

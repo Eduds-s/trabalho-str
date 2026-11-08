@@ -22,7 +22,9 @@
 #include "stm32g4xx_it.h"
 
 #include "miros.h"
-
+extern "C" {
+#include "SEGGER_SYSVIEW.h"
+}
 /******************************************************************************/
 /*           Cortex-M4 Processor Interruption and Exception Handlers          */
 /******************************************************************************/
@@ -109,11 +111,13 @@ void DebugMon_Handler(void)
   */
 void SysTick_Handler(void)
 {
+  SEGGER_SYSVIEW_RecordEnterISR();
   HAL_IncTick();
   rtos::OS_tick();
   __disable_irq();
   rtos::OS_sched();
   __enable_irq();
+  SEGGER_SYSVIEW_RecordExitISRToScheduler();
 }
 
 /******************************************************************************/
