@@ -2,6 +2,7 @@
 /Release/*
 build
 renode_command.txt
+*.launch
 
 # GIT
 !.gitignore
