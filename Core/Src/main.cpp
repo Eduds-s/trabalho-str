@@ -22,7 +22,7 @@
 
 uint32_t conta0=0, conta1=0, conta2=0;
 
-uint32_t stack_blinky1[40];
+uint32_t stack_blinky1[128];
 rtos::OSThread blinky1;
 void main_blinky1() {
     while (1) {
@@ -31,7 +31,7 @@ void main_blinky1() {
     }
 }
 
-uint32_t stack_blinky2[40];
+uint32_t stack_blinky2[128];
 rtos::OSThread blinky2;
 void main_blinky2() {
     while (1) {
@@ -40,7 +40,7 @@ void main_blinky2() {
     }
 }
 
-uint32_t stack_blinky3[40];
+uint32_t stack_blinky3[128];
 rtos::OSThread blinky3;
 void main_blinky3() {
     while (1) {
@@ -49,27 +49,21 @@ void main_blinky3() {
     }
 }
 
-uint32_t stack_idleThread[40];
+uint32_t stack_idleThread[128];
 
 int main(void)
 {
 
 	  rtos::OS_init(stack_idleThread, sizeof(stack_idleThread));
 
-	  /* start blinky1 thread */
-	  rtos::OSThread_start(&blinky1,
-	                 &main_blinky1,
-	                 stack_blinky1, sizeof(stack_blinky1));
+	    /* start blinky1 thread */
+	  	blinky1.start(&main_blinky1, stack_blinky1, sizeof(stack_blinky1), "Blinky1");
 
-	  /* start blinky2 thread */
-	  rtos::OSThread_start(&blinky2,
-	                 &main_blinky2,
-	                 stack_blinky2, sizeof(stack_blinky2));
+	    /* start blinky2 thread */
+	    blinky2.start(&main_blinky2, stack_blinky2, sizeof(stack_blinky2));
 
-	  /* start blinky3 thread */
-	  rtos::OSThread_start(&blinky3,
-	                 &main_blinky3,
-	                 stack_blinky3, sizeof(stack_blinky3));
+	    /* start blinky3 thread */
+	    blinky3.start(&main_blinky3, stack_blinky3, sizeof(stack_blinky3));
 
 	  /* transfer control to the RTOS to run the threads */
 	  rtos::OS_run();

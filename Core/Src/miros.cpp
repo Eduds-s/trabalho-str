@@ -62,9 +62,10 @@ void OS_init(void *stkSto, uint32_t stkSize) {
     *(uint32_t volatile *)0xE000ED20 |= (0xFFU << 16);
 
     /* start idleThread thread */
-    OSThread_start(&idleThread,
-                   &main_idleThread,
-                   stkSto, stkSize);
+    idleThread.start(&main_idleThread,
+    					stkSto,
+					stkSize,
+					"Idle");
 }
 
 void OS_sched(void) {
@@ -105,9 +106,9 @@ void OS_run(void) {
 void OS_tick(void) {
 	uint8_t n = 0;
 	for(n=1U;n<OS_threadNum; n++){ 				/* cycle through every thread but the idle */
-		if(OS_thread[n]->timeout != 0U){
-			OS_thread[n]->timeout--;			/* decrease the timeout */
-			if(OS_thread[n]->timeout == 0U){
+		if(OS_thread[n]->timeout_ != 0U){
+			OS_thread[n]->timeout_--;			/* decrease the timeout */
+			if(OS_thread[n]->timeout_ == 0U){
 				OS_readySet |= (1U << (n-1U));	/* if the thread is ready mask the corresponding bit */
 				SEGGER_SYSVIEW_OnTaskStartReady(reinterpret_cast<uint32_t>(OS_thread[n]));
 			}
@@ -121,7 +122,7 @@ void OS_delay(uint32_t ticks) {
     /* never call OS_delay from the idleThread */
     Q_REQUIRE(OS_curr != OS_thread[0]);
 
-    OS_curr->timeout = ticks;
+    OS_curr->timeout_ = ticks;
     OS_readySet &= ~(1U << (OS_currIdx - 1U));
     SEGGER_SYSVIEW_OnTaskStopReady(reinterpret_cast<uint32_t>(OS_curr), 1U);   // 1 = delay
     OS_sched();
@@ -135,10 +136,10 @@ void yield(void) {
     __asm volatile ("cpsie i");
  }
 
-void OSThread_start(
-    OSThread *me,
-    OSThreadHandler threadHandler,
-    void *stkSto, uint32_t stkSize)
+void OSThread::start(OSThreadHandler threadHandler,
+					void *stkSto,
+					uint32_t stkSize,
+					const char *name)
 {
     /* round down the stack top to the 8-byte boundary
     * NOTE: ARM Cortex-M stack grows down from hi -> low memory
@@ -170,7 +171,7 @@ void OSThread_start(
     *(--sp) = 0x00000004U; /* R4 */
 
     /* save the top of the stack in the thread's attibute */
-    me->sp = sp;
+    sp_ = sp;
 
     /* round up the bottom of the stack to the 8-byte boundary */
     stk_limit = (uint32_t *)(((((uint32_t)stkSto - 1U) / 8) + 1U) * 8);
@@ -181,7 +182,7 @@ void OSThread_start(
     }
 
     /* register the thread with the OS */
-    OS_thread[OS_threadNum] = me;
+    OS_thread[OS_threadNum] = this;
     /* make the thread ready to run */
     if (OS_threadNum > 0U) {
         OS_readySet |= (1U << (OS_threadNum - 1U));
@@ -354,10 +355,10 @@ __asm volatile (
 
 
 extern "C" void os_sendTaskList(void) {
-    for (uint8_t i = 0; i < rtos::OS_threadNum; ++i) {
+    for (uint8_t i = 1; i < rtos::OS_threadNum; ++i) {   // começa em 1: o idle é tratado por OnIdle
         SEGGER_SYSVIEW_TASKINFO info = {};
         info.TaskID = reinterpret_cast<uint32_t>(rtos::OS_thread[i]);
-        info.sName  = rtos::OS_thread[i]->name;
+        info.sName  = rtos::OS_thread[i]->name();
         info.Prio   = i;
         SEGGER_SYSVIEW_SendTaskInfo(&info);
     }

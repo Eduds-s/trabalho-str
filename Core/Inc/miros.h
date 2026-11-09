@@ -8,13 +8,33 @@
 #ifndef INC_MIROS_H_
 #define INC_MIROS_H_
 
+#include <cstdint>
+
 namespace rtos {
+
+typedef void (*OSThreadHandler)();
+
+void OS_tick(void);
+void OS_delay(uint32_t ticks);
+
 /* Thread Control Block (TCB) */
-typedef struct {
-    void *sp; /* stack pointer */
-    uint32_t timeout; /* timeout delay down-counter */
-    /* ... other attributes associated with a thread */
-} OSThread;
+class OSThread {
+public:
+    void start(OSThreadHandler handler,
+    				void *stkSto,
+				uint32_t stkSize,
+				const char *name = nullptr);
+
+    const char *name() const { return name_; }
+
+private:
+    void       *sp_      = nullptr;  /* PRIMEIRO membro: o PendSV usa offset 0 */
+    uint32_t    timeout_ = 0U;
+    const char *name_    = nullptr;
+
+    friend void OS_tick(void);
+    friend void OS_delay(uint32_t ticks);
+};
 
 const uint16_t TICKS_PER_SEC = 100U;
 
@@ -43,10 +63,6 @@ void OS_tick(void);
 /* callback to configure and start interrupts */
 void OS_onStartup(void);
 
-void OSThread_start(
-    OSThread *me,
-    OSThreadHandler threadHandler,
-    void *stkSto, uint32_t stkSize);
 
 class OSSemaphore {
 private:
