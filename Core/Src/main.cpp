@@ -60,10 +60,10 @@ int main(void)
 	  	blinky1.start(&main_blinky1, stack_blinky1, sizeof(stack_blinky1), "Blinky1");
 
 	    /* start blinky2 thread */
-	    blinky2.start(&main_blinky2, stack_blinky2, sizeof(stack_blinky2));
+	    blinky2.start(&main_blinky2, stack_blinky2, sizeof(stack_blinky2), "Blink2");
 
 	    /* start blinky3 thread */
-	    blinky3.start(&main_blinky3, stack_blinky3, sizeof(stack_blinky3));
+	    blinky3.start(&main_blinky3, stack_blinky3, sizeof(stack_blinky3), "Blink3");
 
 	  /* transfer control to the RTOS to run the threads */
 	  rtos::OS_run();

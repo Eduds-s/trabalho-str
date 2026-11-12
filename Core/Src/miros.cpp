@@ -36,6 +36,8 @@ extern "C" {
 #include "SEGGER_SYSVIEW.h"
 }
 
+#define RENODE_SIM   // comente esta linha para gravar na placa
+
 Q_DEFINE_THIS_FILE
 
 namespace rtos {
@@ -146,6 +148,7 @@ void OSThread::start(OSThreadHandler threadHandler,
     */
     uint32_t *sp = (uint32_t *)((((uint32_t)stkSto + stkSize) / 8) * 8);
     uint32_t *stk_limit;
+    name_ = name;
 
     /* thread number must be in ragne
     * and must be unused
@@ -233,8 +236,13 @@ void SystemClock_Config(void)
 }
 
 void OS_onStartup(void) {
-	SystemClock_Config();
+#ifdef RENODE_SIM
+    /* o RCC do Renode (flipflop.py) devolve lixo; fixa o valor do .repl */
+    SystemCoreClock = 170000000U;
+#else
+    SystemClock_Config();
     SystemCoreClockUpdate();
+#endif
     SEGGER_SYSVIEW_Conf();
     SEGGER_SYSVIEW_Start();
     SysTick_Config(SystemCoreClock / TICKS_PER_SEC);
@@ -242,7 +250,6 @@ void OS_onStartup(void) {
     /* set the SysTick interrupt priority (highest) */
     NVIC_SetPriority(SysTick_IRQn, 0U);
 }
-
 void OS_onIdle(void) {
 #ifdef NDBEBUG
     __WFI(); /* stop the CPU and Wait for Interrupt */
