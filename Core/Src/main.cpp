@@ -26,6 +26,7 @@ uint32_t stack_blinky1[40];
 rtos::OSThread blinky1;
 void main_blinky1() {
     while (1) {
+    	if(conta0 % 2 == 0) rtos::yield();
     	conta0++;
     	rtos::OS_delay(rtos::TICKS_PER_SEC * 3U / 4U);
     }
