@@ -36,7 +36,7 @@ Additional information:
 **********************************************************************
 */
 
-#define SEGGER_SYSVIEW_RTT_BUFFER_SIZE 64000
+#define SEGGER_SYSVIEW_RTT_BUFFER_SIZE   32768
 #define SEGGER_SYSVIEW_ID_SHIFT   0
 
 #define SEGGER_SYSVIEW_GET_TIMESTAMP() ((*(U32 *)(0xE0001004)) >> 4)

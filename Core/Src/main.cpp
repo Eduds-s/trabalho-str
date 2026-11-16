@@ -60,6 +60,7 @@ int main(void)
 	  rtos::OS_init(stack_idleThread, sizeof(stack_idleThread));
 
 	  SEGGER_SYSVIEW_Conf(); /* Configure and initialize SystemView */
+	  SEGGER_SYSVIEW_Start(); // Start SystemView
 
 	  /* start blinky1 thread */
 	  rtos::OSThread_start(&blinky1,

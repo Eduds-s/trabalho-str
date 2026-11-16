@@ -29,9 +29,11 @@
 * https://github.com/QuantumLeaps/MiROS
 ****************************************************************************/
 #include <cstdint>
+#include <cstring>
 #include "miros.h"
 #include "qassert.h"
 #include "stm32g4xx.h"
+#include "SEGGER_SYSVIEW.h"
 
 Q_DEFINE_THIS_FILE
 
@@ -121,19 +123,20 @@ void yield(void) {
 void OSThread_start(
     OSThread *me,
     OSThreadHandler threadHandler,
-	const char *name,
+    const char *name,
     void *stkSto, uint32_t stkSize)
 {
+    SEGGER_SYSVIEW_TASKINFO Info;
+
     /* round down the stack top to the 8-byte boundary
-    * NOTE: ARM Cortex-M stack grows down from hi -> low memory
-    */
+     * NOTE: ARM Cortex-M stack grows down from hi -> low memory
+     */
     uint32_t *sp = (uint32_t *)((((uint32_t)stkSto + stkSize) / 8) * 8);
     uint32_t *stk_limit;
 
-
-    /* thread number must be in ragne
-    * and must be unused
-    */
+    /* thread number must be in range
+     * and must be unused
+     */
     Q_REQUIRE((OS_threadNum < Q_DIM(OS_thread)) && (OS_thread[OS_threadNum] == (OSThread *)0));
 
     *(--sp) = (1U << 24);  /* xPSR */
@@ -154,7 +157,7 @@ void OSThread_start(
     *(--sp) = 0x00000005U; /* R5 */
     *(--sp) = 0x00000004U; /* R4 */
 
-    /* save the top of the stack in the thread's attibute */
+    /* save the top of the stack in the thread's attribute */
     me->sp = sp;
     me->name = name;
 
@@ -168,11 +171,25 @@ void OSThread_start(
 
     /* register the thread with the OS */
     OS_thread[OS_threadNum] = me;
-    /* make the thread ready to run */
+
+    /* make the thread ready to run (exceto a idle thread no índice 0) */
     if (OS_threadNum > 0U) {
         OS_readySet |= (1U << (OS_threadNum - 1U));
     }
-    OS_threadNum++;
+
+    /* Notifica o SEGGER SystemView */
+    SEGGER_SYSVIEW_OnTaskCreate((U32)me);
+
+    memset(&Info, 0, sizeof(Info));
+    Info.TaskID    = (U32)me;
+    Info.sName     = me->name;
+    Info.Prio      = OS_threadNum;       /* No MiROS, o índice no array é a prioridade */
+    Info.StackBase = (U32)stkSto;        /* Base da stack (endereço mais baixo) */
+    Info.StackSize = stkSize;            /* Tamanho total em bytes */
+    SEGGER_SYSVIEW_SendTaskInfo(&Info);
+
+    /* increment the number of registered threads */
+    ++OS_threadNum;
 }
 /***********************************************/
 void SystemClock_Config(void)
@@ -250,7 +267,8 @@ OSSemaphore::OSSemaphore(uint32_t initial_count) {
 }
 
 void OSSemaphore::wait() {
-    __asm volatile ("cpsid i"); // Início da seção crítica
+	uint32_t primask = __get_PRIMASK();
+	__disable_irq();  // Início da seção crítica
 
     if (counter > 0U) {
         counter--; // Tem crédito: consome e continua rodando
@@ -266,11 +284,12 @@ void OSSemaphore::wait() {
         OS_sched();
     }
 
-    __asm volatile ("cpsie i"); // Fim da seção crítica
+    __set_PRIMASK(primask); // Fim da seção crítica
 }
 
 void OSSemaphore::signal() {
-    __asm volatile ("cpsid i"); // Início da seção crítica
+	uint32_t primask = __get_PRIMASK();
+	 __disable_irq(); // Início da seção crítica
 
     if (waitSet != 0U) {
         // Se waitSet é diferente de 0, tem pelo menos uma thread bloqueada aqui.
@@ -287,7 +306,7 @@ void OSSemaphore::signal() {
         counter++;
     }
 
-    __asm volatile ("cpsie i"); // Fim da seção crítica
+    __set_PRIMASK(primask); // Fim da seção crítica
 }
 
 }//fim namespace

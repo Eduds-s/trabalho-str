@@ -28,7 +28,23 @@ Purpose : User configuration file for RTT.
 **********************************************************************
 */
 #define BUFFER_SIZE_UP   4
+#define BUFFER_SIZE_DOWN   4
 
+#define SEGGER_RTT_LOCK()   {                                                 \
+                              unsigned int LockState;                         \
+                              __asm volatile ("mrs   %0, primask  \n\t"       \
+                                              "cpsid i            \n\t"       \
+                                              : "=r" (LockState)              \
+                                              :                               \
+                                              : "memory"                      \
+                                              );
+
+#define SEGGER_RTT_UNLOCK()   __asm volatile ("msr   primask, %0  \n\t"       \
+                                              :                               \
+                                              : "r" (LockState)               \
+                                              : "memory"                      \
+                                              );                              \
+                            }
 
 #endif
 /*************************** End of file ****************************/
