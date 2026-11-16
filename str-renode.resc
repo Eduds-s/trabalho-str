@@ -2,7 +2,7 @@
 
 using sysbus
 $name?="nucleo_g474re"
-$binpath?=$ORIGIN/Debug/str-miros-stm32-master.elf
+$binpath?=$ORIGIN/Debug/trabalho-str.elf
 
 mach create $name
 

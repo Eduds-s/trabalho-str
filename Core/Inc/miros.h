@@ -4,7 +4,6 @@
  *  Created on: Feb 6, 2025
  *      Author: guilh
  */
-
 #ifndef INC_MIROS_H_
 #define INC_MIROS_H_
 
@@ -13,6 +12,7 @@ namespace rtos {
 typedef struct {
     void *sp; /* stack pointer */
     uint32_t timeout; /* timeout delay down-counter */
+    const char *name;
     /* ... other attributes associated with a thread */
 } OSThread;
 
@@ -46,6 +46,7 @@ void OS_onStartup(void);
 void OSThread_start(
     OSThread *me,
     OSThreadHandler threadHandler,
+	const char *name,
     void *stkSto, uint32_t stkSize);
 
 class OSSemaphore {

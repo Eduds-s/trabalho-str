@@ -54,15 +54,6 @@ void main_idleThread() {
     }
 }
 
-void OS_init(void *stkSto, uint32_t stkSize) {
-    /* set the PendSV interrupt priority to the lowest level 0xFF */
-    *(uint32_t volatile *)0xE000ED20 |= (0xFFU << 16);
-
-    /* start idleThread thread */
-    OSThread_start(&idleThread,
-                   &main_idleThread,
-                   stkSto, stkSize);
-}
 
 void OS_sched(void) {
     if (OS_readySet == 0U) { /* idle condition? */
@@ -130,6 +121,7 @@ void yield(void) {
 void OSThread_start(
     OSThread *me,
     OSThreadHandler threadHandler,
+	const char *name,
     void *stkSto, uint32_t stkSize)
 {
     /* round down the stack top to the 8-byte boundary
@@ -137,6 +129,7 @@ void OSThread_start(
     */
     uint32_t *sp = (uint32_t *)((((uint32_t)stkSto + stkSize) / 8) * 8);
     uint32_t *stk_limit;
+
 
     /* thread number must be in ragne
     * and must be unused
@@ -163,6 +156,7 @@ void OSThread_start(
 
     /* save the top of the stack in the thread's attibute */
     me->sp = sp;
+    me->name = name;
 
     /* round up the bottom of the stack to the 8-byte boundary */
     stk_limit = (uint32_t *)(((((uint32_t)stkSto - 1U) / 8) + 1U) * 8);
@@ -223,9 +217,21 @@ void SystemClock_Config(void)
   }
 }
 
-void OS_onStartup(void) {
+void OS_init(void *stkSto, uint32_t stkSize) {
 	SystemClock_Config();
-    SystemCoreClockUpdate();
+	SystemCoreClockUpdate();
+
+	/* set the PendSV interrupt priority to the lowest level 0xFF */
+    *(uint32_t volatile *)0xE000ED20 |= (0xFFU << 16);
+
+    /* start idleThread thread */
+    OSThread_start(&idleThread,
+                   &main_idleThread,
+				   "idle_thread",
+                   stkSto, stkSize);
+}
+
+void OS_onStartup(void) {
     SysTick_Config(SystemCoreClock / TICKS_PER_SEC);
 
     /* set the SysTick interrupt priority (highest) */

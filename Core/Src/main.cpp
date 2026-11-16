@@ -26,7 +26,8 @@ uint32_t stack_blinky1[40];
 rtos::OSThread blinky1;
 void main_blinky1() {
     while (1) {
-    	if(conta0 % 2 == 0) rtos::yield();
+    	if(conta0 % 2 == 0)
+    	rtos::yield();
     	conta0++;
     	rtos::OS_delay(rtos::TICKS_PER_SEC * 3U / 4U);
     }
@@ -60,16 +61,19 @@ int main(void)
 	  /* start blinky1 thread */
 	  rtos::OSThread_start(&blinky1,
 	                 &main_blinky1,
+					 "blink1",
 	                 stack_blinky1, sizeof(stack_blinky1));
 
 	  /* start blinky2 thread */
 	  rtos::OSThread_start(&blinky2,
 	                 &main_blinky2,
+					 "blink2",
 	                 stack_blinky2, sizeof(stack_blinky2));
 
 	  /* start blinky3 thread */
 	  rtos::OSThread_start(&blinky3,
 	                 &main_blinky3,
+					 "blink3",
 	                 stack_blinky3, sizeof(stack_blinky3));
 
 	  /* transfer control to the RTOS to run the threads */
