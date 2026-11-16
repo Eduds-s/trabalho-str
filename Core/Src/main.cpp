@@ -19,6 +19,7 @@
 #include "main.h"
 #include <cstdint>
 #include "miros.h"
+#include "SEGGER_SYSVIEW.h"
 
 uint32_t conta0=0, conta1=0, conta2=0;
 
@@ -57,6 +58,8 @@ int main(void)
 {
 
 	  rtos::OS_init(stack_idleThread, sizeof(stack_idleThread));
+
+	  SEGGER_SYSVIEW_Conf(); /* Configure and initialize SystemView */
 
 	  /* start blinky1 thread */
 	  rtos::OSThread_start(&blinky1,
