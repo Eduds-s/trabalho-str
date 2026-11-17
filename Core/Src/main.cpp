@@ -23,18 +23,16 @@
 
 uint32_t conta0=0, conta1=0, conta2=0;
 
-uint32_t stack_blinky1[40];
+uint32_t stack_blinky1[512];
 rtos::OSThread blinky1;
 void main_blinky1() {
     while (1) {
-    	if(conta0 % 2 == 0)
-    	rtos::yield();
     	conta0++;
     	rtos::OS_delay(rtos::TICKS_PER_SEC * 3U / 4U);
     }
 }
 
-uint32_t stack_blinky2[40];
+uint32_t stack_blinky2[512];
 rtos::OSThread blinky2;
 void main_blinky2() {
     while (1) {
@@ -43,7 +41,7 @@ void main_blinky2() {
     }
 }
 
-uint32_t stack_blinky3[40];
+uint32_t stack_blinky3[512];
 rtos::OSThread blinky3;
 void main_blinky3() {
     while (1) {
@@ -52,11 +50,10 @@ void main_blinky3() {
     }
 }
 
-uint32_t stack_idleThread[40];
+uint32_t stack_idleThread[512];
 
 int main(void)
 {
-
 	  rtos::OS_init(stack_idleThread, sizeof(stack_idleThread));
 
 	  SEGGER_SYSVIEW_Conf(); /* Configure and initialize SystemView */

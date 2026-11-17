@@ -48,6 +48,10 @@ uint32_t OS_readySet; /* bitmask of threads that are ready to run */
 uint8_t OS_threadNum; /* number of threads started */
 uint8_t OS_currIdx; /* current thread index for the circular array */
 
+static inline void OS_makeReady(uint8_t threadIdx) {
+    OS_readySet |= (1U << (threadIdx - 1U));
+    SEGGER_SYSVIEW_OnTaskStartReady((U32)OS_thread[threadIdx]);
+}
 
 OSThread idleThread;
 void main_idleThread() {
@@ -55,7 +59,6 @@ void main_idleThread() {
         OS_onIdle();
     }
 }
-
 
 void OS_sched(void) {
     if (OS_readySet == 0U) { /* idle condition? */
@@ -73,7 +76,7 @@ void OS_sched(void) {
 
     /* trigger PendSV, if needed */
     if(OS_next != OS_curr){
-    	*(uint32_t volatile *)0xE000ED04 = (1U << 28);
+    		*(uint32_t volatile *)0xE000ED04 = (1U << 28);
     }
 }
 
@@ -95,7 +98,7 @@ void OS_tick(void) {
 		if(OS_thread[n]->timeout != 0U){
 			OS_thread[n]->timeout--;			/* decrease the timeout */
 			if(OS_thread[n]->timeout == 0U){
-				OS_readySet |= (1U << (n-1U));	/* if the thread is ready mask the corresponding bit */
+				OS_makeReady(n);	/* if the thread is ready mask the corresponding bit */
 			}
 		}
 	}
@@ -109,6 +112,7 @@ void OS_delay(uint32_t ticks) {
 
     OS_curr->timeout = ticks;
     OS_readySet &= ~(1U << (OS_currIdx - 1U));
+    SEGGER_SYSVIEW_OnTaskStopReady((U32)OS_curr, 1U);
     OS_sched();
     __asm volatile ("cpsie i");
  }
@@ -172,10 +176,6 @@ void OSThread_start(
     /* register the thread with the OS */
     OS_thread[OS_threadNum] = me;
 
-    /* make the thread ready to run (exceto a idle thread no índice 0) */
-    if (OS_threadNum > 0U) {
-        OS_readySet |= (1U << (OS_threadNum - 1U));
-    }
 
     /* Notifica o SEGGER SystemView */
     SEGGER_SYSVIEW_OnTaskCreate((U32)me);
@@ -188,6 +188,11 @@ void OSThread_start(
     Info.StackSize = stkSize;            /* Tamanho total em bytes */
     SEGGER_SYSVIEW_SendTaskInfo(&Info);
 
+    /* make the thread ready to run (exceto a idle thread no índice 0) */
+    if (OS_threadNum > 0U) {
+    		OS_makeReady(OS_threadNum);
+    }
+
     /* increment the number of registered threads */
     ++OS_threadNum;
 }
@@ -199,6 +204,7 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
+
   HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1_BOOST);
 
   /** Initializes the RCC Oscillators according to the specified parameters
@@ -281,6 +287,7 @@ void OSSemaphore::wait() {
         waitSet |= (1U << (OS_currIdx - 1U));
 
         // 3. Chama o escalonador para passar a CPU para outra tarefa
+        SEGGER_SYSVIEW_OnTaskStopReady((U32)OS_curr, 2U);
         OS_sched();
     }
 
@@ -292,17 +299,15 @@ void OSSemaphore::signal() {
 	 __disable_irq(); // Início da seção crítica
 
     if (waitSet != 0U) {
-        // Se waitSet é diferente de 0, tem pelo menos uma thread bloqueada aqui.
+        // Se waitSet é diferente de 0, tem pelo menos uma thread bloqueada.
         // O truque bitwise (waitSet & ~(waitSet - 1U)) isola apenas o primeiro bit que for 1.
         uint32_t waitingThreadBit = waitSet & ~(waitSet - 1U);
-
-        // 1. Remove a thread da fila de espera do semáforo
         waitSet &= ~waitingThreadBit;
 
-        // 2. Devolve a thread para o estado de "Pronta" no OS global
-        OS_readySet |= waitingThreadBit;
+        uint8_t threadIdx = (uint8_t)(32U - __CLZ(waitingThreadBit));
+        OS_makeReady(threadIdx);
+
     } else {
-        // Ninguém está esperando, apenas guarda o crédito para o futuro
         counter++;
     }
 
@@ -319,6 +324,15 @@ void Q_onAssert(char const *module, int loc) {
 }
 
 /***********************************************/
+
+extern "C" void OS_traceContextSwitch(void) {
+    if (rtos::OS_curr == &rtos::idleThread) {
+        SEGGER_SYSVIEW_OnIdle();
+    } else {
+        SEGGER_SYSVIEW_OnTaskStartExec((U32)rtos::OS_curr);
+    }
+}
+
 extern "C"
 __attribute__ ((naked, optimize("-fno-stack-protector")))
 void PendSV_Handler(void) {
@@ -352,6 +366,11 @@ __asm volatile (
     "  LDR           r1,[r1,#0x00]     \n"
     "  LDR           r2,=_ZN4rtos7OS_currE       \n"
     "  STR           r1,[r2,#0x00]     \n"
+
+	/* Notifica o SystemView preservando EXC_RETURN (lr) e alinhamento de 8 bytes (r0) */
+	"  PUSH          {r0, lr}          \n"
+	"  BL            OS_traceContextSwitch \n"
+	"  POP           {r0, lr}          \n"
 
     /* pop registers r4-r11 */
     "  POP           {r4-r11}          \n"

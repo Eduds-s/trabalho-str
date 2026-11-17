@@ -67,7 +67,7 @@ extern unsigned int SystemCoreClock;
 #define SYSVIEW_DEVICE_NAME     "Cortex-M4"
 
 // Frequency of the timestamp. Must match SEGGER_SYSVIEW_Conf.h
-#define SYSVIEW_TIMESTAMP_FREQ  (SystemCoreClock)
+#define SYSVIEW_TIMESTAMP_FREQ  (SystemCoreClock >> 4)
 
 // System Frequency. SystemcoreClock is used in most CMSIS compatible projects.
 #define SYSVIEW_CPU_FREQ        (SystemCoreClock)

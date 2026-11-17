@@ -16,7 +16,7 @@ typedef struct {
     /* ... other attributes associated with a thread */
 } OSThread;
 
-const uint16_t TICKS_PER_SEC = 100U;
+const uint16_t TICKS_PER_SEC = 10U;
 
 typedef void (*OSThreadHandler)();
 
