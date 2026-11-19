@@ -73,7 +73,7 @@ extern unsigned int SystemCoreClock;
 #define SYSVIEW_CPU_FREQ        (SystemCoreClock)
 
 // The lowest RAM address used for IDs (pointers)
-#define SYSVIEW_RAM_BASE        (0x10000000)
+#define SYSVIEW_RAM_BASE        (0x20000000)
 
 // Define as 1 if the Cortex-M cycle counter is used as SystemView timestamp. Must match SEGGER_SYSVIEW_Conf.h
 #ifndef   USE_CYCCNT_TIMESTAMP
@@ -82,7 +82,7 @@ extern unsigned int SystemCoreClock;
 
 // Define as 1 if the Cortex-M cycle counter is used and there might be no debugger attached while recording.
 #ifndef   ENABLE_DWT_CYCCNT
-  #define ENABLE_DWT_CYCCNT       (USE_CYCCNT_TIMESTAMP & SEGGER_SYSVIEW_POST_MORTEM_MODE)
+  #define ENABLE_DWT_CYCCNT       1
 #endif
 
 /*********************************************************************

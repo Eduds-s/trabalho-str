@@ -16,7 +16,7 @@ typedef struct {
     /* ... other attributes associated with a thread */
 } OSThread;
 
-const uint16_t TICKS_PER_SEC = 10U;
+const uint16_t TICKS_PER_SEC = 10000U;
 
 typedef void (*OSThreadHandler)();
 
@@ -26,7 +26,8 @@ void OS_init(void *stkSto, uint32_t stkSize);
 void OS_onIdle(void);
 
 /* this function must be called with interrupts DISABLED */
-void OS_sched(void);
+/* returns true when a context switch (PendSV) was requested */
+bool OS_sched(void);
 
 /* transfer control to the RTOS to run the threads */
 void OS_run(void);

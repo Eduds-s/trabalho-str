@@ -60,7 +60,7 @@ void main_idleThread() {
     }
 }
 
-void OS_sched(void) {
+bool OS_sched(void) {
     if (OS_readySet == 0U) { /* idle condition? */
     	OS_currIdx = 0U; /* the idle thread */
     } else {
@@ -77,7 +77,9 @@ void OS_sched(void) {
     /* trigger PendSV, if needed */
     if(OS_next != OS_curr){
     		*(uint32_t volatile *)0xE000ED04 = (1U << 28);
+    		return true;
     }
+    return false;
 }
 
 void OS_run(void) {
@@ -242,6 +244,7 @@ void SystemClock_Config(void)
 
 void OS_init(void *stkSto, uint32_t stkSize) {
 	SystemClock_Config();
+	SysTick->CTRL = 0U;
 	SystemCoreClockUpdate();
 
 	/* set the PendSV interrupt priority to the lowest level 0xFF */
