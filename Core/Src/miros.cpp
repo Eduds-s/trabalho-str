@@ -107,6 +107,7 @@ void OS_tick(void) {
 }
 
 void OS_delay(uint32_t ticks) {
+    SEGGER_SYSVIEW_RecordU32(TRACE_ID_OS_DELAY, ticks); /* evento de API (manual 7.8.2) */
     __asm volatile ("cpsid i");
 
     /* never call OS_delay from the idleThread */
@@ -121,6 +122,7 @@ void OS_delay(uint32_t ticks) {
 
 
 void yield(void) {
+	SEGGER_SYSVIEW_RecordVoid(TRACE_ID_YIELD); /* evento de API (manual 7.8.1) */
 	__asm volatile ("cpsid i");
     OS_sched();
     __asm volatile ("cpsie i");
@@ -276,6 +278,7 @@ OSSemaphore::OSSemaphore(uint32_t initial_count) {
 }
 
 void OSSemaphore::wait() {
+	SEGGER_SYSVIEW_RecordU32(TRACE_ID_SEM_WAIT, (U32)this); /* evento de API (manual 7.8.2) */
 	uint32_t primask = __get_PRIMASK();
 	__disable_irq();  // Início da seção crítica
 
@@ -298,6 +301,7 @@ void OSSemaphore::wait() {
 }
 
 void OSSemaphore::signal() {
+	SEGGER_SYSVIEW_RecordU32(TRACE_ID_SEM_SIGNAL, (U32)this); /* evento de API (manual 7.8.2) */
 	uint32_t primask = __get_PRIMASK();
 	 __disable_irq(); // Início da seção crítica
 

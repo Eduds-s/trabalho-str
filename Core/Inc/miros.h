@@ -20,6 +20,15 @@ const uint16_t TICKS_PER_SEC = 10000U;
 
 typedef void (*OSThreadHandler)();
 
+/* IDs dos eventos de chamada de API no SystemView
+ * (manual SystemView 6.1.4; IDs de API devem estar entre 32 e 511) */
+enum OSTraceApiId {
+    TRACE_ID_OS_DELAY   = 32U,
+    TRACE_ID_YIELD      = 33U,
+    TRACE_ID_SEM_WAIT   = 34U,
+    TRACE_ID_SEM_SIGNAL = 35U
+};
+
 void OS_init(void *stkSto, uint32_t stkSize);
 
 /* callback to handle the idle condition */

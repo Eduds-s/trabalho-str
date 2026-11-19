@@ -61,7 +61,7 @@ extern unsigned int SystemCoreClock;
 **********************************************************************
 */
 // The application name to be displayed in SystemViewer
-#define SYSVIEW_APP_NAME        "Demo Application"
+#define SYSVIEW_APP_NAME        "TheWorstAcai"
 
 // The target device name
 #define SYSVIEW_DEVICE_NAME     "Cortex-M4"
@@ -105,7 +105,7 @@ extern unsigned int SystemCoreClock;
 *    Sends SystemView description strings.
 */
 static void _cbSendSystemDesc(void) {
-  SEGGER_SYSVIEW_SendSysDesc("N="SYSVIEW_APP_NAME",D="SYSVIEW_DEVICE_NAME);
+  SEGGER_SYSVIEW_SendSysDesc("N=" SYSVIEW_APP_NAME ",O=TheWorstAcai,D=" SYSVIEW_DEVICE_NAME); /* O= escolhe o SYSVIEW_TheWorstAcai.txt (manual 6.1.5) */
   SEGGER_SYSVIEW_SendSysDesc("I#15=SysTick");
 }
 
