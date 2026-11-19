@@ -1,0 +1,24 @@
+#
+# Arquivo de descricao do SEGGER SystemView para o RTOS TheWorstAcai (trabalho STR)
+#
+# Manual SystemView (UM08027) secao 6.1.5. O SystemView procura este arquivo pelo
+# nome SYSVIEW_<OSName>.txt, onde <OSName> e o valor "O=" enviado em
+# _cbSendSystemDesc() (SEGGER_SYSVIEW_Config_NoOS.c) -> "O=TheWorstAcai".
+#
+# COPIAR (nao mover) para a pasta "Description" da instalacao do SystemView
+# (ex.: C:\Program Files\SEGGER\SystemView\Description\).
+#
+
+#
+# Chamadas de API (IDs do enum OSTraceApiId em miros.h)
+# Formato: <EventID> <NomeDaFuncao> <DescricaoDosParametros>
+#
+32  OS_delay            Ticks=%u
+33  yield
+34  OSSemaphore_wait    Sem=%p
+35  OSSemaphore_signal  Sem=%p
+
+#
+# Motivo do bloqueio: 2o argumento de SEGGER_SYSVIEW_OnTaskStopReady() em miros.cpp
+#
+TaskState 0xFF 1=Delay, 2=Semaforo
