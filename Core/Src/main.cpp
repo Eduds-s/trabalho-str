@@ -29,6 +29,8 @@ struct produto{
 
 produto fila[CAPACIDADE];
 
+uint32_t erros = 0;   // itens fora de ordem/perdidos (ver no debugger: deve ficar 0)
+
 uint32_t head = 0;
 uint32_t tail = 0;
 
@@ -40,15 +42,16 @@ uint32_t stack_produtor[512];
 rtos::OSThread produtor;
 void main_produtor(){
 	while(1){
+		produto item;
+		static uint16_t proximo = 0;
+		item.id = proximo++;
 		BloqProdutor.wait();
 		MutexFila.wait();
-		produto item;
-		item.id = 316;
 		fila[head] = item;
 		head = (head+1) % CAPACIDADE;
 		MutexFila.signal();
 		BloqConsumidor.signal();
-		rtos::OS_delay(2U);
+		rtos::OS_delay(3U);
 	}
 }
 
@@ -56,13 +59,18 @@ uint32_t stack_consumidor[512];
 rtos::OSThread consumidor;
 void main_consumidor(){
 	while(1){
+		static uint16_t esperado = 0;
+		produto item;
 		BloqConsumidor.wait();
 		MutexFila.wait();
-		produto item;
 		item = fila[tail];
 		tail = (tail+1)% CAPACIDADE;
 		MutexFila.signal();
 		BloqProdutor.signal();
+		if (item.id != esperado) {
+			erros++;
+		}   // fila FIFO: os ids devem chegar em sequencia
+		esperado = item.id + 1;
 		rtos::OS_delay(3U);
 	}
 }

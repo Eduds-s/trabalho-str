@@ -6,7 +6,7 @@ Trabalho final de Sistemas de Tempo Real. Partimos do MiROS (mini RTOS didático
 |------|------|--------|
 | 1 | `yield()` e semáforo sem busy-waiting | ✅ |
 | 2 | Trace com SEGGER SystemView | ✅ |
-| 3 | Produtor/consumidor | ⏳ |
+| 3 | Produtor/consumidor | ✅ |
 | 4 | Tarefas periódicas + escalonador | ⏳ |
 | 5 | Protocolo de compartilhamento de recursos | ⏳ |
 
@@ -15,7 +15,7 @@ Trabalho final de Sistemas de Tempo Real. Partimos do MiROS (mini RTOS didático
 ```
 Core/Src/miros.cpp         kernel: escalonador, delay, yield, semáforo, PendSV
 Core/Inc/miros.h           API do kernel + IDs dos eventos de trace
-Core/Src/main.cpp          aplicação de teste (3 threads)
+Core/Src/main.cpp          aplicação: produtor/consumidor (fase 3)
 Core/Src/stm32g4xx_it.cpp  tabela de vetores + SysTick_Handler
 Core/Config, Core/SEGGER   SystemView/RTT (configuração + código da SEGGER)
 sysview/                   arquivo de descrição do nosso OS para o SystemView
@@ -77,7 +77,7 @@ dump binary memory trace.SVDat _SEGGER_RTT.aUp[1].pBuffer _SEGGER_RTT.aUp[1].pBu
 
 Pelo STM32CubeIDE também dá: aba **Memory** → Export → *RAW Binary*, a partir de `pBuffer`, com tamanho `WrOff`.
 
-Quando o buffer enche, os eventos novos são descartados e aparece um *Overflow* no SystemView. Por isso paramos antes de encher.
+Quando o buffer enche, os eventos novos são descartados. No single-shot o SystemView **não** mostra evento de *Overflow* (ninguém esvazia o buffer), então a perda é conferida no debugger: `p _SYSVIEW_Globals.MainContext.DropCount` tem que dar 0. Por isso paramos antes de encher.
 
 ### Configuração
 
@@ -104,7 +104,7 @@ O arquivo `sysview/SYSVIEW_TheWorstAcai.txt` faz os IDs 32–35 aparecerem com n
 
 ### Análise da timeline
 
-As threads `blink1`, `blink2` e `blink3` fazem `OS_delay` de 10, 20 e 5 ticks. Na timeline aparecem o SysTick (ISR 15) a cada 100 µs, a idle ocupando a maior parte do tempo e as threads acordando nos múltiplos de 5 ticks (o `blink3` com mais frequência).
+Na fase 2 a aplicação de teste tinha três threads, `blink1`, `blink2` e `blink3`, fazendo `OS_delay` de 10, 20 e 5 ticks. Na timeline aparecem o SysTick (ISR 15) a cada 100 µs, a idle ocupando a maior parte do tempo e as threads acordando nos múltiplos de 5 ticks (o `blink3` com mais frequência).
 
 Num tick que acorda uma thread, a sequência é sempre:
 
@@ -115,7 +115,67 @@ ISR Enter (SysTick) → Task Ready (blinkX) → ISR Exit to Scheduler
 
 Nos ticks em que ninguém acorda, aparece só `ISR Enter` → `ISR Exit`.
 
-**Sem perda de dados:** o dump é feito com `WrOff` < 32768, e não há nenhum evento de *Overflow* no trace.
+**Sem perda de dados:** o dump é feito antes de o buffer encher (`WrOff` < 32768), com `DropCount` = 0.
+
+---
+
+## Fase 3 — Produtor/consumidor
+
+### Fila
+
+A fila é um **buffer circular estático**: um vetor global de `CAPACIDADE` (32) posições e dois índices.
+
+```cpp
+struct produto {
+    uint16_t id;
+};
+
+produto fila[CAPACIDADE];   // memória reservada em tempo de link (.bss)
+uint32_t head = 0;          // onde o produtor escreve
+uint32_t tail = 0;          // de onde o consumidor lê
+```
+
+Pensamos primeiro numa fila encadeada com `malloc`, mas no microcontrolador isso não é uma boa: o `malloc` tem tempo variável, não é protegido entre threads no nosso kernel, fragmenta a memória e deixaria a fila sem tamanho máximo (o produtor nunca bloquearia). No buffer circular a ordem vem da posição no vetor, então não precisa de `next`/`previous`: os índices andam com `% CAPACIDADE` e voltam para 0 no fim.
+
+### Semáforos
+
+Os três são os `OSSemaphore` da fase 1, globais para as duas threads enxergarem:
+
+| Semáforo | Inicial | Função |
+|----------|---------|--------|
+| `MutexFila` | 1 | exclusão mútua em `fila`, `head` e `tail` |
+| `BloqProdutor` | `CAPACIDADE` | vagas livres: o produtor bloqueia quando zera (fila cheia) |
+| `BloqConsumidor` | 0 | itens na fila: o consumidor bloqueia quando zera (fila vazia) |
+
+```cpp
+// produtor                          // consumidor
+BloqProdutor.wait();                 BloqConsumidor.wait();
+MutexFila.wait();                    MutexFila.wait();
+fila[head] = item;                   item = fila[tail];
+head = (head + 1) % CAPACIDADE;      tail = (tail + 1) % CAPACIDADE;
+MutexFila.signal();                  MutexFila.signal();
+BloqConsumidor.signal();             BloqProdutor.signal();
+```
+
+O semáforo de crédito vem **antes** do mutex. Ao contrário, o produtor poderia pegar o mutex e bloquear com a fila cheia segurando ele, e o consumidor nunca entraria para liberar espaço (deadlock).
+
+O bloqueio é passivo: quem faz `wait()` sem crédito sai do `readySet` e vai para o `waitSet` do semáforo. O `signal()` passa o crédito direto para a thread acordada, então nenhum sinal se perde.
+
+### Conferindo a ordem
+
+O produtor numera os itens (`id` = 0, 1, 2…) e o consumidor confere se eles chegam em sequência. Se algum item fosse perdido, duplicado ou trocado de lugar, a variável global `erros` seria incrementada. Na demonstração ela fica em **0** (dá para acompanhar na aba Expressions do debugger).
+
+### Cenários
+
+Os cenários mudam só com os valores de `OS_delay` de cada thread:
+
+| Delays | O que acontece |
+|--------|----------------|
+| produtor mais rápido | a fila enche e o **produtor bloqueia** (motivo Semáforo) até o consumidor liberar uma vaga |
+| consumidor mais rápido | a fila esvazia e o **consumidor bloqueia** até chegar item novo |
+| iguais | a fila fica entre 0 e 1 item e o consumidor bloqueia esperando cada item |
+
+Num trace com o produtor em 2 ticks e o consumidor em 3, o produtor bloqueou 161 vezes pelo semáforo, **todas com a fila em exatamente 32 itens**. A ocupação nunca passou de 32 e as contas bateram (257 produzidos − 225 consumidos = 32 na fila). Na timeline, cada bloqueio aparece como `OSSemaphore_wait` → *Task Block (Semaforo)*, e a thread só volta a rodar depois do `OSSemaphore_signal` da outra.
 
 ---
 
@@ -129,3 +189,5 @@ Nos ticks em que ninguém acorda, aparece só `ISR Enter` → `ISR Exit`.
 ## Uso de IA generativa
 
 Usamos o **Claude Opus 5.5** (via Claude Code) para revisar a fase 2. Já sabíamos o que precisava entrar e usamos a IA para conferir com o enunciado e o manual do SystemView o que faltava, além de ajudar na instrumentação do SysTick, nos eventos de API e neste README. O plano que ela propôs era mais complexo do que o necessário, e simplificamos.
+
+Na fase 3 o código foi feito pela equipe. Usamos a IA só para discutir a definição da struct da fila (alocação estática em vez de `malloc`, buffer circular sem `next`/`previous`).
