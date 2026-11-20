@@ -24,19 +24,31 @@
 #include "SEGGER_SYSVIEW.h"
 
 struct produto{
-	uint32_t id;
+	uint16_t id;
 };
 
 produto fila[CAPACIDADE];
 
-produto *head = fila[0];
-produto *tail = fila[0];
+uint32_t head = 0;
+uint32_t tail = 0;
+
+rtos::OSSemaphore MutexFila(1U);
+rtos::OSSemaphore BloqProdutor(CAPACIDADE);
+rtos::OSSemaphore BloqConsumidor(0U);
 
 uint32_t stack_produtor[512];
 rtos::OSThread produtor;
 void main_produtor(){
 	while(1){
-
+		BloqProdutor.wait();
+		MutexFila.wait();
+		produto item;
+		item.id = 316;
+		fila[head] = item;
+		head = (head+1) % CAPACIDADE;
+		MutexFila.signal();
+		BloqConsumidor.signal();
+		rtos::OS_delay(2U);
 	}
 }
 
@@ -44,7 +56,14 @@ uint32_t stack_consumidor[512];
 rtos::OSThread consumidor;
 void main_consumidor(){
 	while(1){
-
+		BloqConsumidor.wait();
+		MutexFila.wait();
+		produto item;
+		item = fila[tail];
+		tail = (tail+1)% CAPACIDADE;
+		MutexFila.signal();
+		BloqProdutor.signal();
+		rtos::OS_delay(3U);
 	}
 }
 
@@ -56,9 +75,6 @@ int main(void)
 
 	  SEGGER_SYSVIEW_Conf(); /* Configure and initialize SystemView */
 	  SEGGER_SYSVIEW_Start(); // Start SystemView
-
-	  rtos::OSSemaphore MutexFila(1U);
-	  rtos::OSSemaphore EspaçoFila(CAPACIDADE);
 
 	  //5tart produtor
 	  rtos::OSThread_start(&produtor,
