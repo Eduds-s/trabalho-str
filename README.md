@@ -104,13 +104,7 @@ O arquivo `sysview/SYSVIEW_TheWorstAcai.txt` faz os IDs 32–35 aparecerem com n
 
 ### Análise da timeline
 
-<!-- TODO: prints do SystemView em img/ -->
-
-![Visão geral](img/timeline-geral.png)
-
 As threads `blink1`, `blink2` e `blink3` fazem `OS_delay` de 10, 20 e 5 ticks. Na timeline aparecem o SysTick (ISR 15) a cada 100 µs, a idle ocupando a maior parte do tempo e as threads acordando nos múltiplos de 5 ticks (o `blink3` com mais frequência).
-
-![Troca de contexto](img/troca-de-contexto.png)
 
 Num tick que acorda uma thread, a sequência é sempre:
 
@@ -121,7 +115,7 @@ ISR Enter (SysTick) → Task Ready (blinkX) → ISR Exit to Scheduler
 
 Nos ticks em que ninguém acorda, aparece só `ISR Enter` → `ISR Exit`.
 
-**Sem perda de dados:** o dump é feito com `WrOff` < 32768, e não há nenhum evento de *Overflow* no trace. <!-- TODO: quanto tempo de trace cabe no buffer -->
+**Sem perda de dados:** o dump é feito com `WrOff` < 32768, e não há nenhum evento de *Overflow* no trace.
 
 ---
 

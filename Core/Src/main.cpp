@@ -16,38 +16,36 @@
   ******************************************************************************
   */
 
+#define CAPACIDADE 32
+
 #include "main.h"
 #include <cstdint>
 #include "miros.h"
 #include "SEGGER_SYSVIEW.h"
 
-uint32_t conta0=0, conta1=0, conta2=0;
+struct produto{
+	uint32_t id;
+};
 
-uint32_t stack_blinky1[512];
-rtos::OSThread blinky1;
-void main_blinky1() {
-    while (1) {
-    	conta0++;
-    	rtos::OS_delay(10U);
-    }
+produto fila[CAPACIDADE];
+
+produto *head = fila[0];
+produto *tail = fila[0];
+
+uint32_t stack_produtor[512];
+rtos::OSThread produtor;
+void main_produtor(){
+	while(1){
+
+	}
 }
 
-uint32_t stack_blinky2[512];
-rtos::OSThread blinky2;
-void main_blinky2() {
-    while (1) {
-    	conta1++;
-    	rtos::OS_delay(20U);
-    }
-}
+uint32_t stack_consumidor[512];
+rtos::OSThread consumidor;
+void main_consumidor(){
+	while(1){
 
-uint32_t stack_blinky3[512];
-rtos::OSThread blinky3;
-void main_blinky3() {
-    while (1) {
-    	conta2++;
-    	rtos::OS_delay(5U);
-    }
+	}
 }
 
 uint32_t stack_idleThread[512];
@@ -59,23 +57,23 @@ int main(void)
 	  SEGGER_SYSVIEW_Conf(); /* Configure and initialize SystemView */
 	  SEGGER_SYSVIEW_Start(); // Start SystemView
 
-	  /* start blinky1 thread */
-	  rtos::OSThread_start(&blinky1,
-	                 &main_blinky1,
-					 "blink1",
-	                 stack_blinky1, sizeof(stack_blinky1));
+	  rtos::OSSemaphore MutexFila(1U);
+	  rtos::OSSemaphore EspaçoFila(CAPACIDADE);
 
-	  /* start blinky2 thread */
-	  rtos::OSThread_start(&blinky2,
-	                 &main_blinky2,
-					 "blink2",
-	                 stack_blinky2, sizeof(stack_blinky2));
+	  //5tart produtor
+	  rtos::OSThread_start(&produtor,
+			  &main_produtor,
+			  "produtor",
+			  stack_produtor,
+			  sizeof(stack_produtor));
 
-	  /* start blinky3 thread */
-	  rtos::OSThread_start(&blinky3,
-	                 &main_blinky3,
-					 "blink3",
-	                 stack_blinky3, sizeof(stack_blinky3));
+	  //start consumidor
+	  rtos::OSThread_start(&consumidor,
+	  			  &main_consumidor,
+	  			  "consumidor",
+	  			  stack_consumidor,
+	  			  sizeof(stack_consumidor));
+
 
 	  /* transfer control to the RTOS to run the threads */
 	  rtos::OS_run();
