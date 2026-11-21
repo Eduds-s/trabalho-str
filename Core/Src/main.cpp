@@ -17,6 +17,8 @@
   */
 
 #define CAPACIDADE 32
+#define PERIODO_PRODUTOR   20U
+#define PERIODO_CONSUMIDOR 30U
 
 #include "main.h"
 #include <cstdint>
@@ -29,7 +31,7 @@ struct produto{
 
 produto fila[CAPACIDADE];
 
-uint32_t erros = 0;   // itens fora de ordem/perdidos (ver no debugger: deve ficar 0)
+uint32_t erros = 0;
 
 uint32_t head = 0;
 uint32_t tail = 0;
@@ -41,38 +43,32 @@ rtos::OSSemaphore BloqConsumidor(0U);
 uint32_t stack_produtor[512];
 rtos::OSThread produtor;
 void main_produtor(){
-	while(1){
-		produto item;
-		static uint16_t proximo = 0;
-		item.id = proximo++;
-		BloqProdutor.wait();
-		MutexFila.wait();
-		fila[head] = item;
-		head = (head+1) % CAPACIDADE;
-		MutexFila.signal();
-		BloqConsumidor.signal();
-		rtos::OS_delay(3U);
-	}
+	produto item;
+	static uint16_t proximo = 0;
+	item.id = proximo++;
+	BloqProdutor.wait();
+	MutexFila.wait();
+	fila[head] = item;
+	head = (head+1) % CAPACIDADE;
+	MutexFila.signal();
+	BloqConsumidor.signal();
 }
 
 uint32_t stack_consumidor[512];
 rtos::OSThread consumidor;
 void main_consumidor(){
-	while(1){
-		static uint16_t esperado = 0;
-		produto item;
-		BloqConsumidor.wait();
-		MutexFila.wait();
-		item = fila[tail];
-		tail = (tail+1)% CAPACIDADE;
-		MutexFila.signal();
-		BloqProdutor.signal();
-		if (item.id != esperado) {
-			erros++;
-		}   // fila FIFO: os ids devem chegar em sequencia
-		esperado = item.id + 1;
-		rtos::OS_delay(3U);
+	static uint16_t esperado = 0;
+	produto item;
+	BloqConsumidor.wait();
+	MutexFila.wait();
+	item = fila[tail];
+	tail = (tail+1)% CAPACIDADE;
+	MutexFila.signal();
+	BloqProdutor.signal();
+	if (item.id != esperado) {
+		erros++;
 	}
+	esperado = item.id + 1;
 }
 
 uint32_t stack_idleThread[512];
@@ -84,19 +80,19 @@ int main(void)
 	  SEGGER_SYSVIEW_Conf(); /* Configure and initialize SystemView */
 	  SEGGER_SYSVIEW_Start(); // Start SystemView
 
-	  //5tart produtor
-	  rtos::OSThread_start(&produtor,
+	  rtos::OSThread_startPeriodic(&produtor,
 			  &main_produtor,
 			  "produtor",
+			  PERIODO_PRODUTOR,
 			  stack_produtor,
 			  sizeof(stack_produtor));
 
-	  //start consumidor
-	  rtos::OSThread_start(&consumidor,
-	  			  &main_consumidor,
-	  			  "consumidor",
-	  			  stack_consumidor,
-	  			  sizeof(stack_consumidor));
+	  rtos::OSThread_startPeriodic(&consumidor,
+			  &main_consumidor,
+			  "consumidor",
+			  PERIODO_CONSUMIDOR,
+			  stack_consumidor,
+			  sizeof(stack_consumidor));
 
 
 	  /* transfer control to the RTOS to run the threads */

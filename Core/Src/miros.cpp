@@ -95,6 +95,8 @@ void OS_run(void) {
 }
 
 void OS_tick(void) {
+	static uint32_t Ostick;
+	Ostick++;
 	uint8_t n = 0;
 	for(n=1U;n<OS_threadNum; n++){ 				/* cycle through every thread but the idle */
 		if(OS_thread[n]->timeout != 0U){
@@ -122,11 +124,33 @@ void OS_delay(uint32_t ticks) {
 
 
 void yield(void) {
-	SEGGER_SYSVIEW_RecordVoid(TRACE_ID_YIELD); /* evento de API (manual 7.8.1) */
+	SEGGER_SYSVIEW_RecordVoid(TRACE_ID_YIELD);
 	__asm volatile ("cpsid i");
     OS_sched();
     __asm volatile ("cpsie i");
  }
+
+void OS_periodicLoop() {
+    while (1) {
+        OS_curr->job();
+        OS_waitNextPeriod();
+    }
+}
+
+void OS_waitNextPeriod(){
+
+}
+
+void OSThread_startPeriodic(OSThread *me,
+							OSThreadHandler job,
+							const char *name,
+							uint32_t period, void *stkSto,
+							uint32_t stkSize) {
+    me->job = job;
+    me->period = period;
+    me->nextRelease = 0U;
+    OSThread_start(me, &OS_periodicLoop, name, stkSto, stkSize);
+}
 
 void OSThread_start(
     OSThread *me,

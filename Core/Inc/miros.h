@@ -10,10 +10,13 @@
 namespace rtos {
 /* Thread Control Block (TCB) */
 typedef struct {
-    void *sp; /* stack pointer */
-    uint32_t timeout; /* timeout delay down-counter */
+    void *sp;                 /* stack pointer -- TEM que ser o 1º campo (a PendSV usa o offset 0) */
+    uint32_t timeout;         /* contador do OS_delay */
     const char *name;
-    /* ... other attributes associated with a thread */
+    OSThreadHandler job;      /* função de UM job (run-to-completion); 0 = não periódica */
+    uint32_t period;          /* período em ticks (0 = não periódica) */
+    uint32_t nextRelease;     /* tick absoluto da próxima liberação */
+    uint8_t  prio;            /* prioridade RM: menor período = maior prioridade */
 } OSThread;
 
 const uint16_t TICKS_PER_SEC = 10000U;
@@ -57,6 +60,15 @@ void OSThread_start(
     OSThread *me,
     OSThreadHandler threadHandler,
 	const char *name,
+    void *stkSto, uint32_t stkSize);
+
+void OS_waitNextPeriod();
+
+void OSThread_startPeriodic(
+    OSThread *me,
+    OSThreadHandler job,
+    const char *name,
+    uint32_t period,
     void *stkSto, uint32_t stkSize);
 
 class OSSemaphore {
