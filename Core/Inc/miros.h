@@ -8,6 +8,9 @@
 #define INC_MIROS_H_
 
 namespace rtos {
+
+typedef void (*OSThreadHandler)();   /* tem que vir antes do TCB (campo job) */
+
 /* Thread Control Block (TCB) */
 typedef struct {
     void *sp;                 /* stack pointer -- TEM que ser o 1º campo (a PendSV usa o offset 0) */
@@ -17,19 +20,21 @@ typedef struct {
     uint32_t period;          /* período em ticks (0 = não periódica) */
     uint32_t nextRelease;     /* tick absoluto da próxima liberação */
     uint8_t  prio;            /* prioridade RM: menor período = maior prioridade */
+    uint32_t deadlineMisses;  /* quantos deadlines essa thread ja perdeu (deadline = fim do periodo) */
 } OSThread;
 
 const uint16_t TICKS_PER_SEC = 10000U;
 
-typedef void (*OSThreadHandler)();
+/* relogio do kernel por software (ticks desde o OS_run); incrementado no OS_tick() */
+extern volatile uint32_t OS_tickCount;
 
-/* IDs dos eventos de chamada de API no SystemView
- * (manual SystemView 6.1.4; IDs de API devem estar entre 32 e 511) */
+/* IDs dos eventos de chamada de API no SystemView*/
 enum OSTraceApiId {
     TRACE_ID_OS_DELAY   = 32U,
     TRACE_ID_YIELD      = 33U,
     TRACE_ID_SEM_WAIT   = 34U,
-    TRACE_ID_SEM_SIGNAL = 35U
+    TRACE_ID_SEM_SIGNAL = 35U,
+    TRACE_ID_DEADLINE_MISS = 36U   /* nao e API: aviso do kernel de deadline perdido */
 };
 
 void OS_init(void *stkSto, uint32_t stkSize);

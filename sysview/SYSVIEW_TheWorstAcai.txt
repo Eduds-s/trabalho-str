@@ -10,6 +10,12 @@
 #
 
 #
+# RM: a prioridade enviada e o periodo (OSThread_start), entao numero MENOR
+# = mais prioritaria (manual 6.1.5.4)
+#
+Option ReversePriority
+
+#
 # Chamadas de API (IDs do enum OSTraceApiId em miros.h)
 # Formato: <EventID> <NomeDaFuncao> <DescricaoDosParametros>
 #
@@ -17,8 +23,9 @@
 33  yield
 34  OSSemaphore_wait    Sem=%p
 35  OSSemaphore_signal  Sem=%p
+36  DeadlineMiss        Task=%t
 
 #
 # Motivo do bloqueio: 2o argumento de SEGGER_SYSVIEW_OnTaskStopReady() em miros.cpp
 #
-TaskState 0xFF 1=Delay, 2=Semaforo
+TaskState 0xFF 1=Delay, 2=Semaforo, 3=Periodo

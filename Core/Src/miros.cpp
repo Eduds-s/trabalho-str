@@ -48,6 +48,8 @@ uint32_t OS_readySet; /* bitmask of threads that are ready to run */
 uint8_t OS_threadNum; /* number of threads started */
 uint8_t OS_currIdx; /* current thread index for the circular array */
 
+volatile uint32_t OS_tickCount; //relogio geral
+
 static inline void OS_makeReady(uint8_t threadIdx) {
     OS_readySet |= (1U << (threadIdx - 1U));
     SEGGER_SYSVIEW_OnTaskStartReady((U32)OS_thread[threadIdx]);
@@ -64,13 +66,12 @@ bool OS_sched(void) {
     if (OS_readySet == 0U) { /* idle condition? */
     	OS_currIdx = 0U; /* the idle thread */
     } else {
-    	do{ /* find the next ready thread*/
-            OS_currIdx++;
-            if(OS_currIdx == OS_threadNum){
-            	OS_currIdx = 1;
-            }
-            OS_next = OS_thread[OS_currIdx];
-    	}while((OS_readySet & (1U <<(OS_currIdx - 1U))) == 0 );
+    	/* Rate Monotonic: as threads foram ordenadas por periodo no OS_onStartup,
+    	 * entao o bit MAIS BAIXO do readySet e a pronta de maior prioridade.
+    	 * (readySet & ~(readySet - 1)) isola esse bit; 32 - CLZ da a posicao + 1 = indice.
+    	 * Tempo constante, independente do numero de threads. */
+    	uint32_t bit = OS_readySet & ~(OS_readySet - 1U);
+    	OS_currIdx = (uint8_t)(32U - __CLZ(bit));
     }
     OS_next = OS_thread[OS_currIdx];
 
@@ -95,15 +96,23 @@ void OS_run(void) {
 }
 
 void OS_tick(void) {
-	static uint32_t Ostick;
-	Ostick++;
+	OS_tickCount++;                                  /* avanca o relogio do kernel */
+
 	uint8_t n = 0;
 	for(n=1U;n<OS_threadNum; n++){ 				/* cycle through every thread but the idle */
+		/* threads em OS_delay: contador regressivo */
 		if(OS_thread[n]->timeout != 0U){
 			OS_thread[n]->timeout--;			/* decrease the timeout */
 			if(OS_thread[n]->timeout == 0U){
 				OS_makeReady(n);	/* if the thread is ready mask the corresponding bit */
 			}
+		}
+		/* threads periodicas: libera quando o relogio chega na proxima liberacao.
+		 * Comparacao por igualdade de proposito: o nextRelease so e atualizado no
+		 * OS_waitNextPeriod, entao enquanto o job roda (ou esta bloqueado num
+		 * semaforo) ele aponta para o passado e a thread nao e liberada por engano. */
+		if((OS_thread[n]->period != 0U) && (OS_tickCount == OS_thread[n]->nextRelease)){
+			OS_makeReady(n);
 		}
 	}
 }
@@ -138,7 +147,33 @@ void OS_periodicLoop() {
 }
 
 void OS_waitNextPeriod(){
+	__disable_irq();
 
+	/* conferencia de deadline (deadline = fim do periodo, D = T): o job que acabou
+	 * de terminar foi liberado em nextRelease e tinha que terminar antes de
+	 * nextRelease + period. Como cada job termina uma vez so, cada atraso e
+	 * contado uma vez. (int32_t)(a - b) >= 0 compara tempos mesmo quando o
+	 * contador da a volta. */
+	if((int32_t)(OS_tickCount - (OS_curr->nextRelease + OS_curr->period)) >= 0){
+		OS_curr->deadlineMisses++;
+		SEGGER_SYSVIEW_RecordU32(TRACE_ID_DEADLINE_MISS,
+		                         SEGGER_SYSVIEW_ShrinkId((U32)OS_curr)); /* aparece no trace */
+	}
+
+	OS_curr->nextRelease += OS_curr->period;          /* proxima liberacao (tempo absoluto: nao escorrega) */
+
+	/* o job passou do periodo (a proxima liberacao ja chegou ou passou):
+	 * o OS_tick nunca mais veria a igualdade, entao nao bloqueia e roda o proximo job ja */
+	if((int32_t)(OS_tickCount - OS_curr->nextRelease) >= 0){
+		__enable_irq();
+		return;
+	}
+
+	OS_readySet &= ~(1U << (OS_currIdx - 1U));        /* sai das prontas ate o OS_tick liberar de novo */
+	SEGGER_SYSVIEW_OnTaskStopReady((U32)OS_curr, 3U); /* trace: job terminado, esperando o proximo periodo (motivo 3) */
+	OS_sched();                                       /* escolhe outra thread (ou a idle) na hora */
+
+	__enable_irq();                                   /* aqui a PendSV troca de contexto */
 }
 
 void OSThread_startPeriodic(OSThread *me,
@@ -211,7 +246,10 @@ void OSThread_start(
     memset(&Info, 0, sizeof(Info));
     Info.TaskID    = (U32)me;
     Info.sName     = me->name;
-    Info.Prio      = OS_threadNum;       /* No MiROS, o índice no array é a prioridade */
+    /* RM: a prioridade e o proprio periodo (menor = mais prioritaria; o .txt tem
+     * "Option ReversePriority"). Sem periodo (idle) = menor prioridade possivel.
+     * O startPeriodic preenche o period antes de chamar o OSThread_start. */
+    Info.Prio      = (me->period != 0U) ? me->period : 0xFFFFFFFFU;
     Info.StackBase = (U32)stkSto;        /* Base da stack (endereço mais baixo) */
     Info.StackSize = stkSize;            /* Tamanho total em bytes */
     SEGGER_SYSVIEW_SendTaskInfo(&Info);
@@ -283,7 +321,41 @@ void OS_init(void *stkSto, uint32_t stkSize) {
                    stkSto, stkSize);
 }
 
+/* chave de ordenacao do RM: menor periodo = maior prioridade.
+ * Threads nao periodicas (period == 0) vao para o fim (menor prioridade). */
+static uint32_t OS_rmKey(OSThread const *t) {
+    return (t->period == 0U) ? 0xFFFFFFFFU : t->period;
+}
+
+/* Rate Monotonic: ordena OS_thread[1..N-1] por periodo crescente (a idle fica no 0).
+ * Depois disso, indice menor = maior prioridade, e o OS_sched so precisa achar o
+ * bit mais baixo do OS_readySet. Os bits do readySet/waitSet sao indices, entao
+ * isso so pode ser feito ANTES de qualquer thread rodar (nenhuma thread e criada
+ * depois do OS_run). */
+static void OS_sortByPeriod(void) {
+    /* insertion sort: estavel (periodos iguais mantem a ordem de criacao) */
+    for (uint8_t i = 2U; i < OS_threadNum; i++) {
+        OSThread *t = OS_thread[i];
+        uint8_t j = i;
+        while ((j > 1U) && (OS_rmKey(OS_thread[j - 1U]) > OS_rmKey(t))) {
+            OS_thread[j] = OS_thread[j - 1U];
+            j--;
+        }
+        OS_thread[j] = t;
+    }
+
+    /* antes do OS_run todas as threads (menos a idle) estao prontas:
+     * refaz o readySet com os indices novos e guarda a prioridade no TCB */
+    OS_readySet = 0U;
+    for (uint8_t n = 1U; n < OS_threadNum; n++) {
+        OS_readySet |= (1U << (n - 1U));
+        OS_thread[n]->prio = n;
+    }
+}
+
 void OS_onStartup(void) {
+    OS_sortByPeriod();   /* RM: prioridades fixas pelo periodo, antes de ligar o tick */
+
     SysTick_Config(SystemCoreClock / TICKS_PER_SEC);
 
     /* set the SysTick interrupt priority (highest) */
@@ -337,6 +409,11 @@ void OSSemaphore::signal() {
 
         uint8_t threadIdx = (uint8_t)(32U - __CLZ(waitingThreadBit));
         OS_makeReady(threadIdx);
+
+        // Preempcao imediata (RM): se a thread acordada for mais prioritaria que a
+        // atual, o OS_sched pede a PendSV e a troca acontece no __set_PRIMASK abaixo,
+        // sem esperar o proximo tick. Se for menos prioritaria, nada muda.
+        OS_sched();
 
     } else {
         counter++;

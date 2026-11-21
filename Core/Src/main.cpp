@@ -17,8 +17,8 @@
   */
 
 #define CAPACIDADE 32
-#define PERIODO_PRODUTOR   20U
-#define PERIODO_CONSUMIDOR 30U
+#define PERIODO_PRODUTOR   1U
+#define PERIODO_CONSUMIDOR 2U
 
 #include "main.h"
 #include <cstdint>
