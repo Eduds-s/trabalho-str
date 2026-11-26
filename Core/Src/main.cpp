@@ -36,39 +36,45 @@ uint32_t erros = 0;
 uint32_t head = 0;
 uint32_t tail = 0;
 
-rtos::OSSemaphore MutexFila(1U);
+rtos::OSMutex MutexFila;
 rtos::OSSemaphore BloqProdutor(CAPACIDADE);
 rtos::OSSemaphore BloqConsumidor(0U);
 
 uint32_t stack_produtor[512];
 rtos::OSThread produtor;
 void main_produtor(){
-	produto item;
 	static uint16_t proximo = 0;
-	item.id = proximo++;
-	BloqProdutor.wait();
-	MutexFila.wait();
-	fila[head] = item;
-	head = (head+1) % CAPACIDADE;
-	MutexFila.signal();
-	BloqConsumidor.signal();
+	while (1) {
+		produto item;
+		item.id = proximo++;
+		BloqProdutor.wait();
+		MutexFila.lock();
+		fila[head] = item;
+		head = (head+1) % CAPACIDADE;
+		MutexFila.unlock();
+		BloqConsumidor.signal();
+		rtos::OS_delay(PERIODO_PRODUTOR);
+	}
 }
 
 uint32_t stack_consumidor[512];
 rtos::OSThread consumidor;
 void main_consumidor(){
 	static uint16_t esperado = 0;
-	produto item;
-	BloqConsumidor.wait();
-	MutexFila.wait();
-	item = fila[tail];
-	tail = (tail+1)% CAPACIDADE;
-	MutexFila.signal();
-	BloqProdutor.signal();
-	if (item.id != esperado) {
-		erros++;
+	while (1) {
+		produto item;
+		BloqConsumidor.wait();
+		MutexFila.lock();
+		item = fila[tail];
+		tail = (tail+1)% CAPACIDADE;
+		MutexFila.unlock();
+		BloqProdutor.signal();
+		if (item.id != esperado) {
+			erros++;
+		}
+		esperado = item.id + 1;
+		rtos::OS_delay(PERIODO_CONSUMIDOR);
 	}
-	esperado = item.id + 1;
 }
 */
 
@@ -97,14 +103,14 @@ void job_alta(){
 uint32_t stack_media[512];
 rtos::OSThread media;
 void job_media(){
-	ocupar_cpu(15U);     /* nao usa o recurso: so ocupa a CPU */
+	ocupar_cpu(5U);     /* nao usa o recurso: so ocupa a CPU */
 }
 
 uint32_t stack_baixa[512];
 rtos::OSThread baixa;
 void job_baixa(){
 	recursoAltaBaixa.lock();
-	ocupar_cpu(20U);     /* secao critica longa */
+	ocupar_cpu(7U);     /* secao critica longa */
 	recursoAltaBaixa.unlock();
 }
 
@@ -117,17 +123,15 @@ int main(void)
 	  SEGGER_SYSVIEW_Conf(); /* Configure and initialize SystemView */
 	  SEGGER_SYSVIEW_Start(); // Start SystemView
 	  /*
-	  rtos::OSThread_startPeriodic(&produtor,
+	  rtos::OSThread_start(&produtor,
 			  &main_produtor,
 			  "produtor",
-			  PERIODO_PRODUTOR,
 			  stack_produtor,
 			  sizeof(stack_produtor));
 
-	  rtos::OSThread_startPeriodic(&consumidor,
+	  rtos::OSThread_start(&consumidor,
 			  &main_consumidor,
 			  "consumidor",
-			  PERIODO_CONSUMIDOR,
 			  stack_consumidor,
 			  sizeof(stack_consumidor));
 	  */
