@@ -413,7 +413,11 @@ void OSSemaphore::signal() {
         // Preempcao imediata (RM): se a thread acordada for mais prioritaria que a
         // atual, o OS_sched pede a PendSV e a troca acontece no __set_PRIMASK abaixo,
         // sem esperar o proximo tick. Se for menos prioritaria, nada muda.
+        SEGGER_SYSVIEW_OnTaskStopExec();
         OS_sched();
+        if (OS_next == OS_curr) {
+                SEGGER_SYSVIEW_OnTaskStartExec((U32)OS_curr);
+        }
 
     } else {
         counter++;
