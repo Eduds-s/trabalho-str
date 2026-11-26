@@ -24,8 +24,12 @@ Option ReversePriority
 34  OSSemaphore_wait    Sem=%p
 35  OSSemaphore_signal  Sem=%p
 36  DeadlineMiss        Task=%t
+37  OSMutex_lock        Mutex=%p
+38  OSMutex_unlock      Mutex=%p
+39  PrioInherit         Task=%t NovaPrio=%u
+40  PrioRestore         Task=%t Prio=%u
 
 #
 # Motivo do bloqueio: 2o argumento de SEGGER_SYSVIEW_OnTaskStopReady() em miros.cpp
 #
-TaskState 0xFF 1=Delay, 2=Semaforo, 3=Periodo
+TaskState 0xFF 1=Delay, 2=Semaforo, 3=Periodo, 4=Mutex

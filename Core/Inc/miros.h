@@ -19,9 +19,9 @@ typedef struct {
     OSThreadHandler job;      /* função de UM job (run-to-completion); 0 = não periódica */
     uint32_t period;          /* período em ticks (0 = não periódica) */
     uint32_t nextRelease;     /* tick absoluto da próxima liberação */
-    uint8_t  prio;            /* prioridade RM: menor período = maior prioridade */
-    uint32_t deadlineMisses;  /* quantos deadlines essa thread ja perdeu (deadline = fim do periodo) */
-} OSThread;
+    uint32_t prio;            /* prioridade EFETIVA: numero menor = mais prioritaria (pode subir na heranca) */
+    uint32_t basePrio;        /* prioridade original RM = periodo (sem periodo = a menor possivel) */
+    uint32_t deadlineMisses;  /* quantos deadlines essa thread ja perdeu (deadline = fim do periodo) */} OSThread;
 
 const uint16_t TICKS_PER_SEC = 10000U;
 
@@ -34,7 +34,11 @@ enum OSTraceApiId {
     TRACE_ID_YIELD      = 33U,
     TRACE_ID_SEM_WAIT   = 34U,
     TRACE_ID_SEM_SIGNAL = 35U,
-    TRACE_ID_DEADLINE_MISS = 36U   /* nao e API: aviso do kernel de deadline perdido */
+    TRACE_ID_DEADLINE_MISS = 36U,  /* nao e API: aviso do kernel de deadline perdido */
+    TRACE_ID_MUTEX_LOCK    = 37U,
+    TRACE_ID_MUTEX_UNLOCK  = 38U,
+    TRACE_ID_PRIO_INHERIT  = 39U,  /* nao e API: o dono do mutex herdou uma prioridade */
+    TRACE_ID_PRIO_RESTORE  = 40U   /* nao e API: o dono voltou para a prioridade base */
 };
 
 void OS_init(void *stkSto, uint32_t stkSize);
@@ -87,6 +91,18 @@ public:
 
     void wait();   // Função para tentar adquirir o semáforo (P / Acquire)
     void signal(); // Função para liberar/sinalizar o semáforo (V / Release)
+};
+
+class OSMutex {
+private:
+    OSThread *owner;   // quem esta com o recurso (nullptr = livre)
+    uint32_t waitSet;  // quem esta esperando (bit n-1 = thread n)
+
+public:
+    OSMutex();
+
+    void lock();     // pega o recurso (bloqueia se tiver dono; o dono pode herdar prioridade)
+    void unlock();   // devolve o recurso (o dono volta a prioridade base)
 };
 
 

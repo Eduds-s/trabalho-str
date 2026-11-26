@@ -43,7 +43,15 @@ OSThread * volatile OS_curr; /* pointer to the current thread */
 OSThread * volatile OS_next; /* pointer to the next thread to run */
 
 OSThread *OS_thread[32 + 1]; /* array of threads started so far */
-uint32_t OS_readySet; /* bitmask of threads that are ready to run */
+/* bitmask das threads prontas: cada bit e uma thread. bit n-1 = thread n
+ * (a idle, thread 0, nao tem bit: ela roda quando ninguem mais esta pronto).
+ * Ex.: OS_readySet = 0b0101 -> bits 0 e 2 ligados -> threads 1 e 3 prontas.
+ * Os waitSet dos semaforos/mutex usam o mesmo formato.
+ * Operacoes usadas no kernel (mascara = 1U << (n - 1U), so o bit da thread n):
+ *   set |= mascara          -> liga o bit   (coloca a thread n na lista)
+ *   set &= ~mascara         -> desliga o bit (tira a thread n da lista)
+ *   (set & mascara) != 0U   -> testa o bit  (a thread n esta na lista?) */
+uint32_t OS_readySet;
 
 uint8_t OS_threadNum; /* number of threads started */
 uint8_t OS_currIdx; /* current thread index for the circular array */
@@ -51,7 +59,7 @@ uint8_t OS_currIdx; /* current thread index for the circular array */
 volatile uint32_t OS_tickCount; //relogio geral
 
 static inline void OS_makeReady(uint8_t threadIdx) {
-    OS_readySet |= (1U << (threadIdx - 1U));
+    OS_readySet |= (1U << (threadIdx - 1U));   /* liga o bit da thread: ela fica pronta */
     SEGGER_SYSVIEW_OnTaskStartReady((U32)OS_thread[threadIdx]);
 }
 
@@ -62,21 +70,29 @@ void main_idleThread() {
     }
 }
 
+
 bool OS_sched(void) {
-    if (OS_readySet == 0U) { /* idle condition? */
-    	OS_currIdx = 0U; /* the idle thread */
-    } else {
-    	/* Rate Monotonic: as threads foram ordenadas por periodo no OS_onStartup,
-    	 * entao o bit MAIS BAIXO do readySet e a pronta de maior prioridade.
-    	 * (readySet & ~(readySet - 1)) isola esse bit; 32 - CLZ da a posicao + 1 = indice.
-    	 * Tempo constante, independente do numero de threads. */
-    	uint32_t bit = OS_readySet & ~(OS_readySet - 1U);
-    	OS_currIdx = (uint8_t)(32U - __CLZ(bit));
+    /* Rate Monotonic com prioridade dinamica: roda a pronta de maior prioridade
+     * EFETIVA (menor 'prio', que pode estar elevada pela heranca).
+     * Ninguem pronto -> idle (indice 0).*/
+    uint8_t best = 0U;
+    for (uint8_t n = 1U; n < OS_threadNum; n++) {
+        /* testa o bit n-1: a thread n esta pronta?
+         * se sim e for a primeira achada (best == 0) ou tiver 'prio' menor
+         * (= mais prioritaria) que a melhor ate agora, vira a melhor */
+        if (((OS_readySet & (1U << (n - 1U))) != 0U) &&
+            ((best == 0U) || (OS_thread[n]->prio < OS_thread[best]->prio))) {
+            best = n;
+        }
     }
+    OS_currIdx = best;
     OS_next = OS_thread[OS_currIdx];
 
     /* trigger PendSV, if needed */
     if(OS_next != OS_curr){
+    		/* 0xE000ED04 = registrador ICSR do Cortex-M; escrever 1 no bit 28
+    		 * (PENDSVSET) deixa a PendSV pendente: ela roda (e troca de contexto)
+    		 * assim que as interrupcoes forem reabilitadas */
     		*(uint32_t volatile *)0xE000ED04 = (1U << 28);
     		return true;
     }
@@ -125,7 +141,7 @@ void OS_delay(uint32_t ticks) {
     Q_REQUIRE(OS_curr != OS_thread[0]);
 
     OS_curr->timeout = ticks;
-    OS_readySet &= ~(1U << (OS_currIdx - 1U));
+    OS_readySet &= ~(1U << (OS_currIdx - 1U));   /* desliga o bit da thread atual: sai das prontas */
     SEGGER_SYSVIEW_OnTaskStopReady((U32)OS_curr, 1U);
     OS_sched();
     __asm volatile ("cpsie i");
@@ -169,7 +185,7 @@ void OS_waitNextPeriod(){
 		return;
 	}
 
-	OS_readySet &= ~(1U << (OS_currIdx - 1U));        /* sai das prontas ate o OS_tick liberar de novo */
+	OS_readySet &= ~(1U << (OS_currIdx - 1U));        /* desliga o bit: sai das prontas ate o OS_tick liberar de novo */
 	SEGGER_SYSVIEW_OnTaskStopReady((U32)OS_curr, 3U); /* trace: job terminado, esperando o proximo periodo (motivo 3) */
 	OS_sched();                                       /* escolhe outra thread (ou a idle) na hora */
 
@@ -206,7 +222,7 @@ void OSThread_start(
      */
     Q_REQUIRE((OS_threadNum < Q_DIM(OS_thread)) && (OS_thread[OS_threadNum] == (OSThread *)0));
 
-    *(--sp) = (1U << 24);  /* xPSR */
+    *(--sp) = (1U << 24);  /* xPSR: bit 24 = bit T (modo Thumb); sem ele o Cortex-M da HardFault */
     *(--sp) = (uint32_t)threadHandler; /* PC */
     *(--sp) = 0x0000000EU; /* LR  */
     *(--sp) = 0x0000000CU; /* R12 */
@@ -239,6 +255,12 @@ void OSThread_start(
     /* register the thread with the OS */
     OS_thread[OS_threadNum] = me;
 
+    /* Rate Monotonic: a prioridade e o proprio periodo (numero menor = mais
+     * prioritaria). Sem periodo (idle ou thread comum) = a menor prioridade possivel.
+     * O startPeriodic preenche o period antes de chamar o OSThread_start.
+     * 'prio' e a efetiva (pode subir temporariamente na heranca); 'basePrio' nao muda. */
+    me->basePrio = (me->period != 0U) ? me->period : 0xFFFFFFFFU;
+    me->prio     = me->basePrio;
 
     /* Notifica o SEGGER SystemView */
     SEGGER_SYSVIEW_OnTaskCreate((U32)me);
@@ -246,10 +268,7 @@ void OSThread_start(
     memset(&Info, 0, sizeof(Info));
     Info.TaskID    = (U32)me;
     Info.sName     = me->name;
-    /* RM: a prioridade e o proprio periodo (menor = mais prioritaria; o .txt tem
-     * "Option ReversePriority"). Sem periodo (idle) = menor prioridade possivel.
-     * O startPeriodic preenche o period antes de chamar o OSThread_start. */
-    Info.Prio      = (me->period != 0U) ? me->period : 0xFFFFFFFFU;
+    Info.Prio      = me->basePrio;       /* = periodo; o .txt tem "Option ReversePriority" */
     Info.StackBase = (U32)stkSto;        /* Base da stack (endereço mais baixo) */
     Info.StackSize = stkSize;            /* Tamanho total em bytes */
     SEGGER_SYSVIEW_SendTaskInfo(&Info);
@@ -311,7 +330,9 @@ void OS_init(void *stkSto, uint32_t stkSize) {
 	SysTick->CTRL = 0U;
 	SystemCoreClockUpdate();
 
-	/* set the PendSV interrupt priority to the lowest level 0xFF */
+	/* set the PendSV interrupt priority to the lowest level 0xFF
+	 * 0xE000ED20 = registrador SHPR3; os bits 16..23 sao a prioridade da PendSV.
+	 * 0xFF << 16 coloca 0xFF nesse byte (0xFF = menor prioridade possivel) */
     *(uint32_t volatile *)0xE000ED20 |= (0xFFU << 16);
 
     /* start idleThread thread */
@@ -321,41 +342,7 @@ void OS_init(void *stkSto, uint32_t stkSize) {
                    stkSto, stkSize);
 }
 
-/* chave de ordenacao do RM: menor periodo = maior prioridade.
- * Threads nao periodicas (period == 0) vao para o fim (menor prioridade). */
-static uint32_t OS_rmKey(OSThread const *t) {
-    return (t->period == 0U) ? 0xFFFFFFFFU : t->period;
-}
-
-/* Rate Monotonic: ordena OS_thread[1..N-1] por periodo crescente (a idle fica no 0).
- * Depois disso, indice menor = maior prioridade, e o OS_sched so precisa achar o
- * bit mais baixo do OS_readySet. Os bits do readySet/waitSet sao indices, entao
- * isso so pode ser feito ANTES de qualquer thread rodar (nenhuma thread e criada
- * depois do OS_run). */
-static void OS_sortByPeriod(void) {
-    /* insertion sort: estavel (periodos iguais mantem a ordem de criacao) */
-    for (uint8_t i = 2U; i < OS_threadNum; i++) {
-        OSThread *t = OS_thread[i];
-        uint8_t j = i;
-        while ((j > 1U) && (OS_rmKey(OS_thread[j - 1U]) > OS_rmKey(t))) {
-            OS_thread[j] = OS_thread[j - 1U];
-            j--;
-        }
-        OS_thread[j] = t;
-    }
-
-    /* antes do OS_run todas as threads (menos a idle) estao prontas:
-     * refaz o readySet com os indices novos e guarda a prioridade no TCB */
-    OS_readySet = 0U;
-    for (uint8_t n = 1U; n < OS_threadNum; n++) {
-        OS_readySet |= (1U << (n - 1U));
-        OS_thread[n]->prio = n;
-    }
-}
-
 void OS_onStartup(void) {
-    OS_sortByPeriod();   /* RM: prioridades fixas pelo periodo, antes de ligar o tick */
-
     SysTick_Config(SystemCoreClock / TICKS_PER_SEC);
 
     /* set the SysTick interrupt priority (highest) */
@@ -382,10 +369,10 @@ void OSSemaphore::wait() {
         counter--; // Tem crédito: consome e continua rodando
     } else {
         // Sem créditos: bloqueia a thread atual
-        // 1. Tira do estado de "Pronta" no sistema operacional
+        // 1. Tira do estado de "Pronta" no sistema operacional (desliga o bit no readySet)
         OS_readySet &= ~(1U << (OS_currIdx - 1U));
 
-        // 2. Coloca o bit desta thread na fila de espera deste semáforo específico
+        // 2. Coloca o bit desta thread na fila de espera deste semáforo específico (liga o bit no waitSet)
         waitSet |= (1U << (OS_currIdx - 1U));
 
         // 3. Chama o escalonador para passar a CPU para outra tarefa
@@ -403,16 +390,20 @@ void OSSemaphore::signal() {
 
     if (waitSet != 0U) {
         // Se waitSet é diferente de 0, tem pelo menos uma thread bloqueada.
-        // O truque bitwise (waitSet & ~(waitSet - 1U)) isola apenas o primeiro bit que for 1.
-        uint32_t waitingThreadBit = waitSet & ~(waitSet - 1U);
-        waitSet &= ~waitingThreadBit;
-
-        uint8_t threadIdx = (uint8_t)(32U - __CLZ(waitingThreadBit));
+        // Acorda a de maior prioridade EFETIVA entre as que esperam (mesmo tipo de
+        // laco deterministico do OS_sched, so que sobre o waitSet).
+        uint8_t threadIdx = 0U;
+        for (uint8_t n = 1U; n < OS_threadNum; n++) {
+            /* testa o bit n-1: a thread n esta esperando? se sim e for a primeira
+             * achada (threadIdx == 0) ou mais prioritaria (prio menor), guarda */
+            if (((waitSet & (1U << (n - 1U))) != 0U) &&
+                ((threadIdx == 0U) || (OS_thread[n]->prio < OS_thread[threadIdx]->prio))) {
+                threadIdx = n;
+            }
+        }
+        waitSet &= ~(1U << (threadIdx - 1U));   /* desliga o bit: sai da fila de espera */
         OS_makeReady(threadIdx);
 
-        // Preempcao imediata (RM): se a thread acordada for mais prioritaria que a
-        // atual, o OS_sched pede a PendSV e a troca acontece no __set_PRIMASK abaixo,
-        // sem esperar o proximo tick. Se for menos prioritaria, nada muda.
         SEGGER_SYSVIEW_OnTaskStopExec();
         OS_sched();
         if (OS_next == OS_curr) {
@@ -424,6 +415,81 @@ void OSSemaphore::signal() {
     }
 
     __set_PRIMASK(primask); // Fim da seção crítica
+}
+
+/***************************************************************************
+ * OSMutex: mutex com Protocolo de Heranca de Prioridade (PIP)
+ ***************************************************************************/
+
+OSMutex::OSMutex() {
+    owner   = nullptr;
+    waitSet = 0U;
+}
+
+void OSMutex::lock() {
+    SEGGER_SYSVIEW_RecordU32(TRACE_ID_MUTEX_LOCK, (U32)this); /* evento de API */
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq(); // inicio da secao critica
+
+    if (owner == nullptr) {
+        // livre: quem chamou vira o dono e segue rodando
+        owner = OS_curr;
+    } else {
+        Q_REQUIRE(owner != OS_curr);
+
+        if (OS_curr->prio < owner->prio) {
+            owner->prio = OS_curr->prio;
+            SEGGER_SYSVIEW_RecordU32x2(TRACE_ID_PRIO_INHERIT,
+                                       SEGGER_SYSVIEW_ShrinkId((U32)owner),
+                                       owner->prio);
+        }
+
+        OS_readySet &= ~(1U << (OS_currIdx - 1U));   /* desliga o bit: sai das prontas */
+        waitSet     |=  (1U << (OS_currIdx - 1U));   /* liga o bit: entra na fila de espera do mutex */
+        SEGGER_SYSVIEW_OnTaskStopReady((U32)OS_curr, 4U); /* motivo 4 = Mutex */
+
+		OS_sched();
+    }
+
+    __set_PRIMASK(primask);
+}
+
+void OSMutex::unlock() {
+    SEGGER_SYSVIEW_RecordU32(TRACE_ID_MUTEX_UNLOCK, (U32)this);
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    Q_REQUIRE(owner == OS_curr);
+
+    if (owner->prio != owner->basePrio) {
+        owner->prio = owner->basePrio;
+        SEGGER_SYSVIEW_RecordU32x2(TRACE_ID_PRIO_RESTORE,
+                                   SEGGER_SYSVIEW_ShrinkId((U32)owner),
+                                   owner->prio);
+    }
+
+    if (waitSet != 0U) {
+        uint8_t threadIdx = 0U;
+        for (uint8_t n = 1U; n < OS_threadNum; n++) {
+            if (((waitSet & (1U << (n - 1U))) != 0U) &&
+                ((threadIdx == 0U) || (OS_thread[n]->prio < OS_thread[threadIdx]->prio))) {
+                threadIdx = n;
+            }
+        }
+        waitSet &= ~(1U << (threadIdx - 1U));   /* desliga o bit: sai da fila de espera */
+        owner = OS_thread[threadIdx];
+        OS_makeReady(threadIdx);
+
+        SEGGER_SYSVIEW_OnTaskStopExec();
+		OS_sched();
+		if (OS_next == OS_curr) {
+				SEGGER_SYSVIEW_OnTaskStartExec((U32)OS_curr);
+		}
+    } else {
+        owner = nullptr;
+    }
+
+    __set_PRIMASK(primask); // fim da secao critica
 }
 
 }//fim namespace
