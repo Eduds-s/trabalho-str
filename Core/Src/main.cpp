@@ -36,7 +36,7 @@ uint32_t erros = 0;
 uint32_t head = 0;
 uint32_t tail = 0;
 
-rtos::OSMutex MutexFila;
+rtos::OSSemaphore MutexFila(1U);
 rtos::OSSemaphore BloqProdutor(CAPACIDADE);
 rtos::OSSemaphore BloqConsumidor(0U);
 
@@ -48,10 +48,10 @@ void main_produtor(){
 		produto item;
 		item.id = proximo++;
 		BloqProdutor.wait();
-		MutexFila.lock();
+		MutexFila.wait();
 		fila[head] = item;
 		head = (head+1) % CAPACIDADE;
-		MutexFila.unlock();
+		MutexFila.signal();
 		BloqConsumidor.signal();
 		rtos::OS_delay(PERIODO_PRODUTOR);
 	}
@@ -64,10 +64,10 @@ void main_consumidor(){
 	while (1) {
 		produto item;
 		BloqConsumidor.wait();
-		MutexFila.lock();
+		MutexFila.wait();
 		item = fila[tail];
 		tail = (tail+1)% CAPACIDADE;
-		MutexFila.unlock();
+		MutexFila.signal();
 		BloqProdutor.signal();
 		if (item.id != esperado) {
 			erros++;

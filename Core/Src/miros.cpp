@@ -371,10 +371,10 @@ void OSSemaphore::wait() {
     } else {
         // Sem créditos: bloqueia a thread atual
         // 1. Tira do estado de "Pronta" no sistema operacional (desliga o bit no readySet)
-        OS_readySet &= ~(1U << (OS_currIdx - 1U));
+        OS_readySet &= ~(1U << (OS_currIdx - 1U));   /* desliga o bit: sai das prontas */
 
         // 2. Coloca o bit desta thread na fila de espera deste semáforo específico (liga o bit no waitSet)
-        waitSet |= (1U << (OS_currIdx - 1U));
+        waitSet |= (1U << (OS_currIdx - 1U));        /* liga o bit: entra na fila de espera do semaforo */
 
         // 3. Chama o escalonador para passar a CPU para outra tarefa
         SEGGER_SYSVIEW_OnTaskStopReady((U32)OS_curr, 2U);
@@ -472,6 +472,8 @@ void OSMutex::unlock() {
     if (waitSet != 0U) {
         uint8_t threadIdx = 0U;
         for (uint8_t n = 1U; n < OS_threadNum; n++) {
+            /* testa o bit n-1: a thread n esta esperando? se sim e for a primeira
+             * achada (threadIdx == 0) ou mais prioritaria (prio menor), guarda */
             if (((waitSet & (1U << (n - 1U))) != 0U) &&
                 ((threadIdx == 0U) || (OS_thread[n]->prio < OS_thread[threadIdx]->prio))) {
                 threadIdx = n;

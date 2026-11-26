@@ -285,7 +285,7 @@ Nos ticks sem liberação aparecem apenas `ISR Enter` e `ISR Exit`.
 
 ### Produtor/consumidor
 
-Buffer circular estático de 32 posições, protegido por um `OSMutex`, com dois semáforos de contagem: `BloqProdutor` (vagas, inicia em 32) e `BloqConsumidor` (itens, inicia em 0). O semáforo de crédito é adquirido antes do mutex; na ordem inversa, o produtor bloquearia com a fila cheia segurando o mutex, e o consumidor nunca liberaria espaço (*deadlock*).
+Buffer circular estático de 32 posições, com três semáforos: `MutexFila` (binário, inicia em 1) garante a exclusão mútua em `fila`, `head` e `tail`; `BloqProdutor` (vagas, inicia em 32) e `BloqConsumidor` (itens, inicia em 0) controlam o fluxo. O semáforo de crédito é adquirido antes do `MutexFila`; na ordem inversa, o produtor bloquearia com a fila cheia segurando a exclusão mútua, e o consumidor nunca liberaria espaço (*deadlock*).
 
 Com o produtor a cada 2 ticks e o consumidor a cada 3:
 - o produtor bloqueou **161 vezes** no semáforo, todas com a fila em exatamente **32 itens**;
@@ -381,7 +381,7 @@ Regras de uso:
 ### Renode
 
 - `nucleog474re.repl`: clocks em 170 MHz, como no `SystemClock_Config()`. RCC, PWR e FLASH são emulados por scripts Python que devolvem os bits de "pronto" esperados pela HAL.
-- `str-renode.resc`: carrega `Debug/trabalho-str.elf`, abre o servidor GDB na porta 3333 e mantém `LogFunctionNames False` (com `True` a simulação fica muito lenta).
+- `str-renode.resc`: carrega `Debug/trabalho-str.elf` (o CubeIDE nomeia o `.elf` pelo nome do projeto no `.project`), abre o servidor GDB na porta 3333 e mantém `LogFunctionNames False` (com `True` a simulação fica muito lenta). Se o projeto for importado com outro nome, basta definir `$binpath=@<caminho do .elf>` antes de incluir o script.
 
 ---
 
