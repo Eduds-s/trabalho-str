@@ -1,57 +1,69 @@
-# TheWorstAçaí — RTOS didático no STM32G474RE
+# TheWorstAçaí — RTOS para o STM32G474RE
 
-Trabalho final de Sistemas de Tempo Real. Partimos do MiROS (mini RTOS didático do Miro Samek), portamos para a NUCLEO-G474RE em **C++20** e evoluímos ele fase por fase até ter escalonamento Rate Monotonic e herança de prioridade. Também rodamos no **Renode**, com o mesmo firmware: nada no código depende do simulador.
+Kernel de tempo real em **C++20** para a NUCLEO-G474RE (Cortex-M4F, 170 MHz), construído a partir do MiROS (Miro Samek). O kernel tem escalonamento preemptivo **Rate Monotonic**, tarefas periódicas *run-to-completion* com base de tempo por software, semáforos com bloqueio passivo e **mutex com Protocolo de Herança de Prioridade (PIP)**. O comportamento temporal é verificado com traces do **SEGGER SystemView**. O mesmo firmware roda na placa e no simulador **Renode**.
 
-| Fase | Tema | Status |
-|------|------|--------|
-| 1 | `yield()` e semáforo sem busy-waiting | ✅ |
-| 2 | Trace com SEGGER SystemView | ✅ |
-| 3 | Produtor/consumidor | ✅ |
-| 4 | Tarefas periódicas + escalonador Rate Monotonic | ✅ |
-| 5 | Mutex com Protocolo de Herança de Prioridade (PIP) | ✅ |
+**Autores:** Pedro Paranaguá de Faria Gripp (24103280) · Eduardo Schroeder Dias (24101945)
 
-**Ambiente:** NUCLEO-G474RE a 170 MHz · STM32CubeIDE (GCC, `-std=c++20`) · Renode 1.17 · SEGGER SystemView.
+**Ambiente:** STM32CubeIDE (GCC, `-std=c++20`) · Renode 1.17 · SEGGER SystemView.
+
+| Requisito do enunciado | Onde está |
+|---|---|
+| Arquitetura desenvolvida | [1. Arquitetura](#1-arquitetura-do-kernel) |
+| Diagramas das pilhas e transições de contexto | [2. Pilhas e troca de contexto](#2-pilhas-e-troca-de-contexto) |
+| Priorização baseada em herança | [4. Mutex com herança de prioridade](#4-mutex-com-herança-de-prioridade-pip) |
+| Modelo de temporização independente | [5. Modelo de temporização](#5-modelo-de-temporização) |
+| Análise das linhas de tempo do trace | [7. Resultados e análise dos traces](#7-resultados-e-análise-dos-traces) |
+| Uso de IA generativa | [Uso de IA generativa](#uso-de-ia-generativa) |
 
 ```
 Core/Src/miros.cpp         kernel: escalonador, tick, delay, yield, semáforo, mutex, PendSV
 Core/Inc/miros.h           API do kernel, TCB e IDs dos eventos de trace
-Core/Src/main.cpp          aplicação: demo da fase 5 (e produtor/consumidor comentado)
-Core/Src/stm32g4xx_it.cpp  tabela de vetores + SysTick_Handler
-Core/Config, Core/SEGGER   SystemView/RTT (configuração + código da SEGGER)
-sysview/                   arquivo de descrição do nosso OS para o SystemView
-nucleog474re.repl          placa para o Renode
+Core/Src/main.cpp          aplicação de demonstração (PIP ativo; produtor/consumidor comentado)
+Core/Src/stm32g4xx_it.cpp  tabela de vetores e SysTick_Handler
+Core/Config, Core/SEGGER   SystemView/RTT (configuração e código da SEGGER)
+sysview/                   arquivo de descrição do kernel para o SystemView
+nucleog474re.repl          descrição da placa para o Renode
 str-renode.resc            script da simulação
 ```
 
 ---
 
-## Arquitetura do kernel
+## 1. Arquitetura do kernel
 
-### TCB
+### Thread Control Block
 
-Cada thread tem um TCB (`OSThread`):
+```cpp
+typedef struct {
+    void *sp;                 // topo da pilha salvo (1º campo: a PendSV lê o offset 0)
+    uint32_t timeout;         // contador do OS_delay
+    const char *name;         // nome (aparece no trace)
+    OSThreadHandler job;      // função de um job (tarefa periódica)
+    uint32_t period;          // período em ticks (0 = thread sem período)
+    uint32_t nextRelease;     // tick absoluto da próxima liberação
+    uint32_t prio;            // prioridade efetiva (pode ser elevada pela herança)
+    uint32_t basePrio;        // prioridade original
+    uint32_t deadlineMisses;  // deadlines perdidos
+} OSThread;
+```
 
-| Campo | Para que serve | Desde |
-|-------|----------------|-------|
-| `sp` | topo da pilha salvo na troca de contexto (**tem** que ser o 1º campo: a PendSV lê o offset 0) | fase 1 |
-| `timeout` | contador regressivo do `OS_delay` | fase 1 |
-| `name` | nome (aparece no trace) | fase 2 |
-| `job` | função de um job (tarefa periódica) | fase 4 |
-| `period` | período em ticks (0 = thread sem período) | fase 4 |
-| `nextRelease` | tick absoluto da próxima liberação | fase 4 |
-| `deadlineMisses` | quantos deadlines a thread perdeu | fase 4 |
-| `prio` | prioridade **efetiva** (número menor = mais prioritária; pode subir na herança) | fase 4/5 |
-| `basePrio` | prioridade original (= período) | fase 5 |
+TCB e pilha de cada thread são variáveis globais da aplicação. O kernel não faz alocação dinâmica: guarda só ponteiros no vetor `OS_thread[33]`, em que o índice 0 é a thread idle.
 
-### Threads, prontas e escalonador
+### Conjuntos de threads
 
-- As threads ficam em `OS_thread[33]`. O índice 0 é a **idle**, criada no `OS_init()`; as da aplicação vêm na ordem em que são criadas.
-- Quem está pronto fica no bitmask `OS_readySet`: o bit `n-1` representa a thread `n` (a idle não tem bit). Os semáforos e o mutex usam o mesmo formato no `waitSet`.
-- O `OS_sched()` escolhe, entre as prontas, a de **menor `prio`** (maior prioridade). Se ninguém está pronto, roda a idle. Se a escolhida for outra thread, ele pede a PendSV e retorna `true`.
+O estado é representado por bitmasks de 32 bits, em que o bit `n-1` corresponde à thread `n`:
+
+- `OS_readySet`: threads prontas. A idle não tem bit e roda quando o conjunto está vazio;
+- `waitSet` de cada semáforo e de cada mutex: threads bloqueadas naquele objeto.
+
+Bloquear uma thread é desligar o bit dela no `OS_readySet` e ligar no `waitSet`. Desbloquear é a operação inversa. Nenhuma thread bloqueada consome CPU.
+
+### Escalonador
+
+A política é **Rate Monotonic**: a prioridade de uma tarefa periódica é o seu período (número menor = mais prioritária), e threads sem período ficam com a menor prioridade (`0xFFFFFFFF`). O `OS_sched()` escolhe a thread pronta de menor `prio`:
 
 ```cpp
 uint8_t best = 0U;                                   // 0 = idle
-for (uint8_t n = 1U; n < OS_threadNum; n++) {        // SEMPRE todas as threads
+for (uint8_t n = 1U; n < OS_threadNum; n++) {
     if (((OS_readySet & (1U << (n - 1U))) != 0U) &&
         ((best == 0U) || (OS_thread[n]->prio < OS_thread[best]->prio))) {
         best = n;
@@ -59,248 +71,84 @@ for (uint8_t n = 1U; n < OS_threadNum; n++) {        // SEMPRE todas as threads
 }
 ```
 
-O laço passa sempre por todas as threads, e o `OS_threadNum` não muda depois do `OS_run()`. Então o tempo do escalonador tem um **pior caso fixo**, que não depende de quem está pronto nem do valor das prioridades: é isso que mantém o kernel determinístico mesmo com a prioridade mudando na herança (fase 5).
+O laço percorre sempre as N threads registradas, e N não muda depois do `OS_run()`. O custo do escalonador tem portanto um **pior caso fixo**, independente de quais threads estão prontas e dos valores de prioridade. Como a decisão usa a prioridade efetiva (`prio`), o mesmo laço atende à herança de prioridade sem nenhum custo adicional.
 
-### Tick
+O escalonador é chamado:
+- no `SysTick_Handler`, depois do `OS_tick()`: **preempção por tempo**;
+- nas primitivas que acordam threads (`signal()`, `unlock()`): **preempção imediata** quando a thread acordada é mais prioritária;
+- nas primitivas que bloqueiam (`OS_delay`, `wait()`, `lock()`, `OS_waitNextPeriod`) e no `yield()`.
 
-SysTick a `TICKS_PER_SEC = 10000` (um tick a cada 100 µs). O `OS_tick()` avança o relógio do kernel (`OS_tickCount`), acorda quem terminou o `OS_delay` e libera as tarefas periódicas. O `SysTick_Handler` chama o `OS_tick()` e depois o `OS_sched()`, que é o que faz a **preempção por tempo**.
+Quando a thread escolhida é diferente da atual, o `OS_sched()` pede a PendSV pelo bit 28 (PENDSVSET) do registrador ICSR, e a troca acontece assim que as interrupções forem reabilitadas.
 
-### Pilha e troca de contexto
+### Seções críticas
 
-O `OSThread_start` monta a pilha de cada thread (2 KB) como se ela já tivesse sido interrompida uma vez. Assim a primeira entrada pela PendSV funciona igual às outras:
+As estruturas do kernel são protegidas desabilitando interrupções. O `yield()`, o semáforo e o mutex salvam e restauram o PRIMASK (`__get_PRIMASK` / `__disable_irq` / `__set_PRIMASK`), então funcionam corretamente mesmo quando chamados com as interrupções já desabilitadas.
+
+---
+
+## 2. Pilhas e troca de contexto
+
+Cada thread tem pilha própria (2 KB na aplicação de demonstração). O `OSThread_start` monta a pilha inicial como se a thread já tivesse sido interrompida uma vez, de modo que a primeira entrada pela PendSV é igual a todas as outras:
 
 ```
 alto  ┌──────────────┐
-      │ xPSR, PC, LR │ ┐ frame empilhado/desempilhado
-      │ R12, R3..R0  │ ┘ pelo hardware na exceção
+      │ xPSR (bit T) │ ┐
+      │ PC = handler │ │ frame empilhado/desempilhado
+      │ LR, R12      │ │ pelo hardware na exceção
+      │ R3..R0       │ ┘
       ├──────────────┤
-      │ R11..R4      │ ← salvos pela PendSV (software)
+      │ R11..R4      │ ← salvos pela PendSV
       ├──────────────┤ ← me->sp
-      │ 0xDEADBEEF…  │   resto da pilha (para ver o uso)
+      │ 0xDEADBEEF…  │   área livre (permite medir o uso da pilha)
 baixo └──────────────┘
 ```
 
-O xPSR inicial tem o bit 24 (bit T, modo Thumb) ligado; sem ele o Cortex-M dá HardFault na primeira execução da thread.
+O xPSR inicial tem o bit 24 (Thumb) ligado; sem ele o Cortex-M gera HardFault na primeira execução da thread.
+
+A troca de contexto é feita pela `PendSV_Handler` do MiROS. Para o C++20 ela foi declarada como `extern "C"` (nome sem *mangling*, para a tabela de vetores) e `__attribute__((naked))` (sem prólogo nem epílogo gerados pelo compilador), e recebeu uma chamada ao trace. A transição entre duas threads é:
 
 ```
-SysTick (prioridade mais alta)        PendSV (prioridade mais baixa)
-  OS_tick()                             PUSH r4-r11 ; OS_curr->sp = SP
-  OS_sched() → pede PendSV  ───────►    SP = OS_next->sp ; OS_curr = OS_next
-  sai da ISR                            OS_traceContextSwitch()  (trace)
-                                        POP r4-r11 ; BX LR → nova thread
+SysTick (prioridade mais alta)          PendSV (prioridade mais baixa)
+  OS_tick()                               salva R4–R11 na pilha da thread atual
+  OS_sched() → pede PendSV  ───────────►  OS_curr->sp = SP
+  sai da ISR                              SP = OS_next->sp ; OS_curr = OS_next
+                                          registra a troca no SystemView
+                                          restaura R4–R11 ; retorna da exceção
+                                          → o hardware restaura o resto do frame
 ```
 
-A PendSV tem a menor prioridade (`0xFF` no registrador SHPR3), então a troca nunca acontece no meio de outra ISR. Ela é pedida escrevendo o bit 28 (PENDSVSET) do registrador ICSR.
+A PendSV tem a menor prioridade de exceção (0xFF, configurada no SHPR3 no `OS_init`), então a troca nunca acontece no meio de outra ISR.
 
 ---
 
-## Fase 1 — `yield()` e semáforo
+## 3. Semáforo
 
-- **`PendSV_Handler`** é `extern "C"` e `__attribute__((naked))`, escrita em assembly inline, para o compilador não colocar prólogo/epílogo de função C++ no meio da troca de contexto.
-- **`yield()`** chama o escalonador sem bloquear: a thread cede a CPU voluntariamente. Com o RM (fase 4), ele só troca de thread se houver alguém pronto mais prioritário.
-- **`OSSemaphore`** tem um contador e um `waitSet` (bitmask de quem está esperando):
-  - `wait()`: se tem crédito, consome e segue. Senão, a thread **sai do `readySet`** e entra no `waitSet`, e o escalonador passa a CPU para outra. É um bloqueio **passivo**, sem busy-waiting;
-  - `signal()`: se tem alguém esperando, acorda a thread **mais prioritária** do `waitSet` e passa o crédito direto para ela (nenhum sinal se perde). Senão, incrementa o contador. Depois de acordar alguém, chama o `OS_sched()`: se a acordada for mais prioritária que a atual, ela **preempta na hora**, sem esperar o próximo tick.
+`OSSemaphore` é um semáforo contador com fila de bloqueio:
 
-As seções críticas do kernel salvam e restauram o `PRIMASK` (`__get_PRIMASK` / `__disable_irq` / `__set_PRIMASK`).
+- `wait()`: se `counter > 0`, consome um crédito e segue. Senão, a thread sai do `OS_readySet`, entra no `waitSet` do semáforo e o escalonador entrega a CPU para outra thread. É um bloqueio passivo, sem *busy-waiting*.
+- `signal()`: se há threads esperando, acorda a **mais prioritária** do `waitSet` (mesmo laço do escalonador) e entrega o crédito diretamente a ela. Senão, incrementa o contador. Depois de acordar alguém, chama o `OS_sched()`, o que dá preempção imediata se a thread acordada for mais prioritária.
 
----
-
-## Fase 2 — Trace com SystemView
-
-### Coleta: single-shot + dump de memória
-
-A NUCLEO tem ST-LINK, não J-Link, então não dá para gravar continuamente via RTT. Usamos a gravação **single-shot** do manual do SystemView (UM08027, 3.15.2):
-
-1. o `SEGGER_SYSVIEW_Start()` liga a gravação, e os eventos vão para um buffer RTT de 32 KB na RAM;
-2. paramos a CPU, salvamos o buffer e abrimos no SystemView (*File → Load Recording*).
-
-```gdb
-target remote :3333                     # Renode (str-renode.resc) ou ST-Link
-p _SEGGER_RTT.aUp[1]                    # confere sName = "SysView" e o WrOff
-dump binary memory trace.SVDat _SEGGER_RTT.aUp[1].pBuffer _SEGGER_RTT.aUp[1].pBuffer+_SEGGER_RTT.aUp[1].WrOff
-```
-
-Pelo STM32CubeIDE também dá: aba **Memory** → Export → *RAW Binary*, a partir de `pBuffer`, com tamanho `WrOff`.
-
-Quando o buffer enche, os eventos novos são descartados. No single-shot o SystemView **não** mostra evento de *Overflow* (ninguém esvazia o buffer), então a perda é conferida no debugger: `p _SYSVIEW_Globals.MainContext.DropCount` tem que dar 0. Por isso paramos antes de encher.
-
-### Configuração
-
-- **Timestamp:** `DWT->CYCCNT >> 4` (28 bits). O `ENABLE_DWT_CYCCNT = 1` liga o contador mesmo sem debugger, senão os timestamps saem zerados na placa.
-- **ID da interrupção** lido do `ICSR`; base de RAM dos IDs em `0x20000000`.
-- **Descrição do sistema:** `N=TheWorstAcai,O=TheWorstAcai,D=Cortex-M4`, `I#15=SysTick`.
-- **Prioridade enviada no `SendTaskInfo`:** o período da thread (fase 4), com `Option ReversePriority` no `.txt` (número menor = mais prioritária).
-
-### Instrumentação
-
-| Onde | Evento |
-|------|--------|
-| `OSThread_start` | `OnTaskCreate` + `SendTaskInfo` |
-| `OS_makeReady` (fim do delay, liberação periódica, `signal`, `unlock`) | `OnTaskStartReady` |
-| bloqueios | `OnTaskStopReady` com o motivo: 1 = Delay, 2 = Semáforo, 3 = Período, 4 = Mutex |
-| PendSV → `OS_traceContextSwitch` | `OnTaskStartExec` ou `OnIdle` |
-| `signal()` / `unlock()` que acordam alguém | `OnTaskStopExec` antes do `OS_sched()` e, se não houver troca, `OnTaskStartExec` da mesma thread, para a preempção aparecer na timeline |
-| `SysTick_Handler` | `RecordEnterISR` na entrada; na saída, `RecordExitISRToScheduler` se o `OS_sched()` pediu troca, senão `RecordExitISR` |
-| início de `OS_delay`, `yield`, `wait`, `signal`, `lock`, `unlock` | eventos de API (IDs 32–35, 37, 38) |
-| fim de job atrasado (fase 4) | `DeadlineMiss` (ID 36) |
-| herança e restauração (fase 5) | `PrioInherit` (ID 39) e `PrioRestore` (ID 40) |
-
-Os eventos de API existem porque um `wait()` com crédito ou um `signal()` sem ninguém esperando não mudam o estado de nenhuma thread e não apareceriam no trace.
-
-A idle é criada antes do `Start`, então o nome dela não vai para o trace. Não faz falta: o SystemView reconhece a idle pelo evento `OnIdle`.
-
-O arquivo `sysview/SYSVIEW_TheWorstAcai.txt` faz os IDs 32–40 aparecerem com nome (`OS_delay Ticks=10`, `DeadlineMiss Task=alta`, `PrioInherit Task=baixa NovaPrio=20`…), traduz o motivo do bloqueio e liga o `ReversePriority`. Ele tem que ser **copiado** para `C:\Program Files\SEGGER\SystemView\Description\`.
-
-### Análise da timeline
-
-Na fase 2 a aplicação de teste tinha três threads, `blink1`, `blink2` e `blink3`, fazendo `OS_delay` de 10, 20 e 5 ticks. Na timeline aparecem o SysTick (ISR 15) a cada 100 µs, a idle ocupando a maior parte do tempo e as threads acordando nos múltiplos de 5 ticks (o `blink3` com mais frequência).
-
-Num tick que acorda uma thread, a sequência é sempre:
-
-```
-ISR Enter (SysTick) → Task Ready (blinkX) → ISR Exit to Scheduler
-  → Task Run (blinkX) → OS_delay → Task Block (Delay) → Idle
-```
-
-Nos ticks em que ninguém acorda, aparece só `ISR Enter` → `ISR Exit`.
-
-**Sem perda de dados:** o dump é feito antes de o buffer encher (`WrOff` < 32768), com `DropCount` = 0.
+O semáforo não tem dono: uma thread pode fazer `wait()` e outra `signal()`. Por isso ele serve para sinalização e contagem de recursos (como as vagas de um buffer), mas não para herança de prioridade.
 
 ---
 
-## Fase 3 — Produtor/consumidor
+## 4. Mutex com herança de prioridade (PIP)
 
-### Fila
+### Inversão de prioridade
 
-A fila é um **buffer circular estático**: um vetor global de `CAPACIDADE` (32) posições e dois índices.
-
-```cpp
-struct produto {
-    uint16_t id;
-};
-
-produto fila[CAPACIDADE];   // memória reservada em tempo de link (.bss)
-uint32_t head = 0;          // onde o produtor escreve
-uint32_t tail = 0;          // de onde o consumidor lê
-```
-
-Pensamos primeiro numa fila encadeada com `malloc`, mas no microcontrolador isso não é uma boa: o `malloc` tem tempo variável, não é protegido entre threads no nosso kernel, fragmenta a memória e deixaria a fila sem tamanho máximo (o produtor nunca bloquearia). No buffer circular a ordem vem da posição no vetor, então não precisa de `next`/`previous`: os índices andam com `% CAPACIDADE` e voltam para 0 no fim.
-
-### Sincronização
-
-| Objeto | Tipo | Inicial | Função |
-|--------|------|---------|--------|
-| `MutexFila` | `OSMutex` (fase 5; na fase 3 era um `OSSemaphore(1)`) | livre | exclusão mútua em `fila`, `head` e `tail` |
-| `BloqProdutor` | `OSSemaphore` | `CAPACIDADE` | vagas livres: o produtor bloqueia quando zera (fila cheia) |
-| `BloqConsumidor` | `OSSemaphore` | 0 | itens na fila: o consumidor bloqueia quando zera (fila vazia) |
-
-```cpp
-// produtor (while(1))                // consumidor (while(1))
-BloqProdutor.wait();                  BloqConsumidor.wait();
-MutexFila.lock();                     MutexFila.lock();
-fila[head] = item;                    item = fila[tail];
-head = (head + 1) % CAPACIDADE;       tail = (tail + 1) % CAPACIDADE;
-MutexFila.unlock();                   MutexFila.unlock();
-BloqConsumidor.signal();              BloqProdutor.signal();
-OS_delay(PERIODO_PRODUTOR);           OS_delay(PERIODO_CONSUMIDOR);
-```
-
-- O semáforo de crédito vem **antes** do mutex. Ao contrário, o produtor poderia pegar o mutex e bloquear com a fila cheia segurando ele, e o consumidor nunca entraria para liberar espaço (deadlock).
-- Os semáforos de crédito **não** são mutex: uma thread faz `wait()` e **outra** faz `signal()`, então não existe "dono". Por isso só a fila usa o `OSMutex`.
-- O produtor e o consumidor são threads comuns (`OSThread_start`, sem período), com `while(1)` + `OS_delay`. Assim eles não têm deadline, e o trace mostra só a sincronização.
-
-### Conferindo a ordem
-
-O produtor numera os itens (`id` = 0, 1, 2…) e o consumidor confere se eles chegam em sequência. Se algum item fosse perdido, duplicado ou trocado de lugar, a variável global `erros` seria incrementada. Na demonstração ela fica em **0** (dá para acompanhar na aba Expressions do debugger).
-
-### Cenários
-
-| `OS_delay` | O que acontece |
-|------------|----------------|
-| produtor mais rápido | a fila enche e o **produtor bloqueia** (motivo Semáforo) até o consumidor liberar uma vaga |
-| consumidor mais rápido | a fila esvazia e o **consumidor bloqueia** até chegar item novo |
-| iguais | a fila fica entre 0 e 1 item e o consumidor bloqueia esperando cada item |
-
-Num trace com o produtor em 2 ticks e o consumidor em 3, o produtor bloqueou 161 vezes pelo semáforo, **todas com a fila em exatamente 32 itens**. A ocupação nunca passou de 32 e as contas bateram (257 produzidos − 225 consumidos = 32 na fila). Na timeline, cada bloqueio aparece como `OSSemaphore_wait` → *Task Block (Semaforo)*, e a thread só volta a rodar depois do `OSSemaphore_signal` da outra.
-
----
-
-## Fase 4 — Tarefas periódicas e Rate Monotonic
-
-Escolhemos o **Rate Monotonic (RM)**: prioridade fixa, e quanto menor o período, maior a prioridade. É o mais simples dos três que o enunciado aceita (só depende do período) e combina com a fase 5, já que a herança de prioridade é definida em cima de prioridades fixas.
-
-### Tarefa periódica (run-to-completion)
-
-A aplicação entrega uma função que faz **um job** e retorna. Quem repete é o kernel:
-
-```cpp
-void OS_periodicLoop() {          // corpo de toda thread periódica
-    while (1) {
-        OS_curr->job();           // um job, até o fim
-        OS_waitNextPeriod();      // dorme até o próximo período
-    }
-}
-
-rtos::OSThread_startPeriodic(&alta, &job_alta, "alta", PERIODO_ALTA,
-                             stack_alta, sizeof(stack_alta));
-```
-
-O `OSThread_startPeriodic` guarda `job`, `period` e `nextRelease` no TCB e cria a thread com o `OSThread_start` de sempre, começando no `OS_periodicLoop`. Não tem alocação dinâmica: TCB e pilha continuam sendo globais da aplicação. O job não pode simplesmente "retornar" para terminar a thread, porque o LR inicial da pilha é falso e daria HardFault; por isso o laço fica no kernel.
-
-### Modelo de tempo (independente do hardware)
-
-- **Relógio por software:** `OS_tickCount` é incrementado no `OS_tick()`. Liberação e deadline usam só esse contador. O SysTick só serve de gatilho, e as únicas partes ligadas ao STM32 são o `OS_onStartup()` (configura o SysTick) e o `SysTick_Handler` (chama o `OS_tick()`). Para portar o kernel, basta trocar quem chama o `OS_tick()`.
-- **Tempo absoluto:** ao terminar um job, o `OS_waitNextPeriod` faz `nextRelease += period`, em vez de "esperar `period` ticks a partir de agora". Assim o período não escorrega quando o job demora.
-- **Liberação:** no `OS_tick`, quando `OS_tickCount == nextRelease` a thread volta para o `readySet`. A comparação é por igualdade de propósito: o `nextRelease` só muda quando o job termina, então uma thread ainda rodando (ou bloqueada num semáforo) nunca é liberada por engano.
-- **Job atrasado:** se o job terminar depois da próxima liberação, o `OS_waitNextPeriod` não bloqueia e o próximo job roda em seguida.
-
-### Prioridade RM
-
-A prioridade é o **próprio período**: no `OSThread_start`, `basePrio = prio = period` (sem período, `0xFFFFFFFF`, a menor). Como o RM diz que menor período = maior prioridade, não é preciso ordenar nada: o `OS_sched()` (laço da seção "Arquitetura") já escolhe a pronta de menor `prio`.
-
-Na primeira versão da fase 4 as threads eram ordenadas por período no `OS_onStartup()` e o escalonador pegava o bit mais baixo do `readySet` (O(1)). Trocamos pelo laço na fase 5, porque na herança a prioridade **muda durante a execução**, e "prioridade = posição no vetor" não consegue representar isso.
-
-Efeitos que vêm junto:
-- o `signal()` acorda a thread **mais prioritária** do `waitSet` (mesmo laço) e chama o `OS_sched()`, então ela **preempta na hora**;
-- o `SysTick_Handler` chama o `OS_sched()`, garantindo a preempção quando o **tempo** libera uma tarefa;
-- o `yield()` nunca entrega a CPU para uma thread menos prioritária.
-
-### Deadlines
-
-O deadline de cada job é o fim do período (`nextRelease + period`). O kernel confere quando o job termina, no `OS_waitNextPeriod`: se o relógio já passou do deadline, incrementa `deadlineMisses` no TCB e grava o evento `DeadlineMiss` no SystemView. Como cada job termina uma vez só, cada atraso é contado uma vez, inclusive quando a tarefa está atrasada há vários períodos.
-
-A limitação é que um job que nunca termina (travado para sempre) não é contado. Isso seria um deadlock, e aparece na timeline de outro jeito: a tarefa some.
-
-### Análise do trace
-
-Na fase 4 testamos o produtor e o consumidor como tarefas periódicas, com o produtor em **1 tick** (mais prioritário) e o consumidor em **2 ticks**, fila de 32:
-
-- o produtor é mais rápido, então a fila enche em ~6,6 ms. Daí em diante ele bloqueou **239 vezes** pelo semáforo, **todas com a fila em exatamente 32** itens;
-- nas 239 vezes, o `signal()` do consumidor acordou o produtor e ele **preemptou o consumidor na hora** (`OSSemaphore_signal` → *Task Run* do produtor, sem SysTick no meio);
-- o produtor passou a perder deadline (226 `DeadlineMiss` em ~52 ms), um a cada 2 ticks. A CPU estava quase toda livre: o atraso vinha da **espera pela fila**, porque o consumidor só libera uma vaga a cada 2 ticks e o produtor queria produzir uma por tick.
-
-Isso mostrou que o produtor/consumidor não é um bom exemplo de RM (os atrasos vêm da sincronização, não do escalonamento). Por isso ele voltou para threads sem período (fase 3), e o RM é demonstrado com as três tarefas da fase 5, que gastam CPU de verdade: na timeline, a `alta` (período 20) interrompe a `media` no meio do job dela.
-
----
-
-## Fase 5 — Mutex com herança de prioridade (PIP)
-
-### O problema
-
-Com três tarefas, **alta**, **média** e **baixa**, em que só a alta e a baixa usam um recurso R:
+Com três tarefas, **alta**, **média** e **baixa**, em que só a alta e a baixa usam um recurso R protegido por um semáforo binário:
 
 ```
-B pega R → A é liberada, tenta pegar R e BLOQUEIA (R é da B)
-         → M é liberada e PREEMPTA a B (M é mais prioritária que B)
-         → enquanto M roda, B não solta R, e A fica esperando a M
+baixa pega R → alta é liberada, tenta pegar R e bloqueia
+             → média é liberada e preempta a baixa
+             → enquanto a média roda, a baixa não libera R e a alta espera
 ```
 
-A alta fica esperando uma tarefa que nem usa o recurso, por um tempo sem limite (depende de quanto as tarefas médias rodam): é a **inversão de prioridade ilimitada**. O semáforo não consegue evitar isso porque **não sabe quem está com o recurso**.
+A alta passa a esperar uma tarefa que nem usa o recurso, por um tempo que depende de quanto as tarefas intermediárias executam: é a **inversão de prioridade ilimitada**. O semáforo não consegue evitar isso porque não sabe quem está com o recurso.
 
 ### `OSMutex`
 
-O mutex é uma classe separada do semáforo porque tem **dono**: a mesma thread faz `lock()` e `unlock()`. É isso que permite saber quem precisa herdar a prioridade. (Os semáforos de sinalização, como o `BloqProdutor`, não têm dono, e a herança não se aplica a eles.)
+O mutex registra o **dono** (`owner`), a thread que fez o `lock()` e que é a única autorizada a fazer o `unlock()`.
 
 ```cpp
 class OSMutex {
@@ -312,78 +160,228 @@ public:
 };
 ```
 
-**`lock()`:**
-- livre → quem chamou vira o dono e segue;
-- ocupado → se quem chamou é **mais prioritário** que o dono (`prio` menor), **o dono herda a prioridade dele** (`owner->prio = OS_curr->prio`, evento `PrioInherit`); depois, quem chamou bloqueia (motivo 4 = Mutex) e o `OS_sched()` escolhe o dono, que agora vale como a tarefa alta.
+**`lock()`**
+- livre: quem chamou vira o dono e segue;
+- ocupado: se quem chamou tem prioridade maior que a do dono, o dono **herda** a prioridade (`owner->prio = OS_curr->prio`, evento `PrioInherit`). Depois quem chamou bloqueia (motivo *Mutex*) e o escalonador escolhe o dono, que agora não pode ser preemptado por tarefas de prioridade intermediária.
 
-**`unlock()`:**
-- o dono volta para a prioridade base (`owner->prio = owner->basePrio`, evento `PrioRestore`);
-- se tem alguém esperando, o mutex passa **direto** para o esperador mais prioritário, que vira o novo dono, e o `OS_sched()` deixa ele preemptar na hora. Senão, o mutex fica livre.
+**`unlock()`**
+- o dono volta para a prioridade original (`owner->prio = owner->basePrio`, evento `PrioRestore`);
+- se há threads esperando, o mutex passa **diretamente** para a mais prioritária, que vira o novo dono e fica pronta, e o `OS_sched()` permite a preempção imediata. Senão, o mutex fica livre.
 
-Os dois verificam com `Q_REQUIRE` as regras de uso (o dono não trava de novo; só o dono destrava). Se a aplicação quebrar uma delas, o `Q_onAssert` reseta a placa em vez de seguir num estado inconsistente.
+As regras de uso são verificadas com `Q_REQUIRE` (o dono não trava o mesmo mutex de novo; só o dono destrava). Uma violação chama `Q_onAssert`, que reinicia o microcontrolador.
 
-**Limitações:** cada thread segura um mutex por vez (sem herança encadeada entre vários mutexes). Para a demonstração, com um recurso, isso basta.
+### Modelagem da prioridade
 
-### Determinismo
+Cada thread tem duas prioridades:
 
-A herança muda a prioridade, mas não o custo do kernel: o `OS_sched()`, o `signal()` e o `unlock()` usam o mesmo laço de N voltas (N fixo), e elevar ou restaurar a prioridade é uma atribuição. E é o PIP que **torna o bloqueio calculável**: a tarefa alta espera no máximo a seção crítica da baixa (o termo B da análise de tempo de resposta, R = C + B + interferência), em vez de um tempo sem limite.
+| Campo | Definido em | Significado |
+|---|---|---|
+| `basePrio` | `OSThread_start` (= período, pela regra RM) | prioridade original, nunca muda |
+| `prio` | `= basePrio` na criação; alterado só pelo mutex | prioridade efetiva, usada pelo escalonador |
 
-### Demo
+A herança é uma atribuição em `prio` e a restauração é a cópia de volta de `basePrio`. O escalonador e a escolha do esperador no `unlock()` usam o mesmo laço de N voltas, então a herança não altera o custo de pior caso do kernel.
 
-Três tarefas periódicas que gastam CPU de verdade:
+Com o PIP, o tempo que uma tarefa fica bloqueada por uma de menor prioridade é **limitado pela seção crítica** desta, o que torna o termo de bloqueio B calculável na análise de tempo de resposta (R = C + B + interferência das mais prioritárias).
 
-| Tarefa | Período | Job | Prioridade RM |
-|--------|---------|-----|---------------|
-| `alta` | 20 ticks (2 ms) | pega o recurso, gasta 1 tick, solta | alta |
-| `media` | 30 ticks (3 ms) | gasta 15 ticks, **sem** usar o recurso | média |
-| `baixa` | 100 ticks (10 ms) | pega o recurso, gasta **20 ticks**, solta | baixa |
+**Limitação:** cada thread segura no máximo um mutex por vez (não há herança encadeada entre vários mutexes).
 
-O "gastar" é o `ocupar_cpu(ticks)`, um laço vazio com `LOOPS_POR_TICK` voltas por tick. O laço só avança enquanto a thread está rodando: se ela for preemptada no meio, continua de onde parou, como um cálculo de verdade (um `OS_delay` não serviria, porque dormir libera a CPU). Calculamos `LOOPS_POR_TICK = 800` pelo assembly do laço (14 instruções por volta: ~900 voltas/tick na placa a 170 MHz, ~700 no Renode) e conferimos no trace: o job da `media` durou **1,515 ms** em média (planejado: 1,5 ms).
+---
 
-Os tempos foram escolhidos para os eventos caírem nesta ordem: a baixa pega o recurso em t≈16, a alta é liberada em t=20 e bloqueia, e a média é liberada em t=30, com a baixa ainda dentro da seção crítica. O padrão se repete a cada 100 ticks.
+## 5. Modelo de temporização
 
-Para gravar os dois traces, muda só o tipo do recurso no `main.cpp`:
-- **sem protocolo:** `rtos::OSSemaphore recursoAltaBaixa(1U);` com `wait()`/`signal()` (semáforo binário simples);
-- **com PIP:** `rtos::OSMutex recursoAltaBaixa;` com `lock()`/`unlock()`.
+### Relógio do kernel
 
-### Resultados
+O tempo do kernel é o contador `OS_tickCount`, incrementado no `OS_tick()`. Com `TICKS_PER_SEC = 10000`, um tick vale 100 µs. Liberações, deadlines e `OS_delay` são calculados apenas com esse contador:
+
+```cpp
+void OS_tick(void) {
+    OS_tickCount++;
+    for (n = 1U; n < OS_threadNum; n++) {
+        // OS_delay: contador regressivo em timeout
+        if ((OS_thread[n]->period != 0U) &&
+            (OS_tickCount == OS_thread[n]->nextRelease)) {
+            OS_makeReady(n);                       // liberação periódica
+        }
+    }
+}
+```
+
+Os únicos pontos ligados ao hardware são o `OS_onStartup()`, que configura o SysTick, e o `SysTick_Handler`, que chama `OS_tick()` e `OS_sched()`. Para portar o kernel para outra plataforma, basta que outra interrupção periódica chame essas duas funções.
+
+### Tarefas periódicas
+
+A aplicação fornece uma função que executa **um job** e retorna; o kernel é quem repete:
+
+```cpp
+void OS_periodicLoop() {          // corpo de toda thread periódica
+    while (1) {
+        OS_curr->job();
+        OS_waitNextPeriod();
+    }
+}
+```
+
+No fim de cada job, o `OS_waitNextPeriod()`:
+1. confere o deadline (D = T): se `OS_tickCount` já passou de `nextRelease + period`, incrementa `deadlineMisses` e registra o evento `DeadlineMiss`;
+2. avança a liberação em **tempo absoluto** (`nextRelease += period`), para o período não escorregar quando um job demora;
+3. se a próxima liberação já passou (job atrasado), retorna e o próximo job roda em seguida; senão, a thread sai das prontas até o `OS_tick()` liberá-la.
+
+A liberação no `OS_tick()` compara por igualdade de propósito: `nextRelease` só avança quando o job termina, então um job ainda em execução (ou bloqueado num semáforo) nunca é liberado de novo. Como cada job termina uma única vez, cada atraso é contado uma vez, mesmo que a tarefa esteja atrasada vários períodos. Um job que nunca termina não é contado; esse caso é um travamento e aparece na timeline como a tarefa deixando de executar.
+
+---
+
+## 6. Instrumentação e coleta do trace
+
+### Eventos
+
+| Onde | Evento SystemView |
+|------|-------------------|
+| `OSThread_start` | `OnTaskCreate` + `SendTaskInfo` (prioridade = período) |
+| `OS_makeReady` | `OnTaskStartReady` |
+| bloqueios | `OnTaskStopReady`, com o motivo: 1 = Delay, 2 = Semáforo, 3 = Período, 4 = Mutex |
+| PendSV | `OnTaskStartExec`, ou `OnIdle` |
+| `signal()` / `unlock()` que acordam alguém | `OnTaskStopExec` antes do `OS_sched()` (e `OnTaskStartExec` se não houver troca) |
+| `SysTick_Handler` | `RecordEnterISR`; na saída `RecordExitISRToScheduler` se houver troca, senão `RecordExitISR` |
+| `OS_delay`, `yield`, `wait`, `signal`, `lock`, `unlock` | eventos de API (IDs 32–35, 37, 38) |
+| kernel | `DeadlineMiss` (36), `PrioInherit` (39), `PrioRestore` (40) |
+
+O arquivo `sysview/SYSVIEW_TheWorstAcai.txt` dá nome e formato aos eventos 32–40, traduz o motivo do bloqueio e liga o `Option ReversePriority` (número menor = mais prioritária). Ele deve ser copiado para `C:\Program Files\SEGGER\SystemView\Description\`. O timestamp é o `DWT->CYCCNT >> 4` (resolução de 16 ciclos ≈ 94 ns a 170 MHz).
+
+### Coleta *single-shot*
+
+Os eventos são gravados num buffer RTT de 32 KB na RAM. Ao fim do experimento, a CPU é parada e o buffer é salvo pelo debugger:
+
+```gdb
+target remote :3333                     # Renode (str-renode.resc) ou ST-LINK
+p _SEGGER_RTT.aUp[1]                    # confere sName = "SysView" e o WrOff
+dump binary memory trace.SVDat _SEGGER_RTT.aUp[1].pBuffer _SEGGER_RTT.aUp[1].pBuffer+_SEGGER_RTT.aUp[1].WrOff
+p _SYSVIEW_Globals.MainContext.DropCount   # tem que ser 0
+```
+
+Pelo STM32CubeIDE: aba **Memory** → Export → *RAW Binary*, a partir de `pBuffer`, com tamanho `WrOff`. O arquivo é aberto no SystemView em *File → Load Recording*.
+
+Escolhemos esse método em vez de transmitir os eventos pela UART por três motivos:
+
+- **Taxa de eventos.** Na aplicação de demonstração o kernel gera cerca de **105 KB/s** de dados de trace (32 KB em ~310 ms). Uma UART a 115200 bit/s transmite cerca de 11,5 KB/s; mesmo a 921600 bit/s não acompanharia, e os eventos seriam descartados.
+- **Interferência mínima.** Durante a execução, gravar um evento é só copiar alguns bytes para a RAM. Não há periférico, interrupção de transmissão nem DMA disputando a CPU com as tarefas, então o trace não altera a temporização que está sendo medida.
+- **Janela suficiente.** 32 KB cobrem cerca de 300 ms, o equivalente a ~50 hiperperíodos da demonstração da seção 7. Isso basta para observar o comportamento em regime e repetido.
+
+O método funciona igual na placa (ST-LINK) e no Renode. A perda de eventos é conferida pelo `DropCount`, já que na gravação *single-shot* o SystemView não registra *overflow*.
+
+---
+
+## 7. Resultados e análise dos traces
+
+### Execução básica
+
+Com três threads fazendo `OS_delay` de 10, 20 e 5 ticks, a timeline mostra o SysTick (ISR 15) a cada 100 µs (~4,9 µs por execução) e a idle ocupando o tempo livre. Num tick que acorda uma thread, a sequência registrada é sempre:
+
+```
+ISR Enter (SysTick) → Task Ready → ISR Exit to Scheduler
+  → Task Run → OS_delay → Task Block (Delay) → Idle
+```
+
+Nos ticks sem liberação aparecem apenas `ISR Enter` e `ISR Exit`.
+
+### Produtor/consumidor
+
+Buffer circular estático de 32 posições, protegido por um `OSMutex`, com dois semáforos de contagem: `BloqProdutor` (vagas, inicia em 32) e `BloqConsumidor` (itens, inicia em 0). O semáforo de crédito é adquirido antes do mutex; na ordem inversa, o produtor bloquearia com a fila cheia segurando o mutex, e o consumidor nunca liberaria espaço (*deadlock*).
+
+Com o produtor a cada 2 ticks e o consumidor a cada 3:
+- o produtor bloqueou **161 vezes** no semáforo, todas com a fila em exatamente **32 itens**;
+- produzidos − consumidos = 257 − 225 = 32, igual à capacidade;
+- a verificação de sequência no consumidor (`erros`) permaneceu em **0**: nenhum item perdido, duplicado ou fora de ordem.
+
+Na timeline, cada bloqueio aparece como `OSSemaphore_wait` → *Task Block (Semaforo)*, e a thread só volta a executar após o `OSSemaphore_signal` da outra.
+
+### Rate Monotonic e PIP
+
+**Conjunto de tarefas** (execução simulada pelo laço calibrado `ocupar_cpu`):
+
+| Tarefa | Período T | Execução C | Recurso R |
+|--------|-----------|------------|-----------|
+| alta | 15 ticks (1,5 ms) | 1 tick | sim, o job inteiro |
+| média | 20 ticks (2 ms) | 9 ticks | não |
+| baixa | 60 ticks (6 ms) | 13 ticks | sim, o job inteiro |
+
+U = 1/15 + 9/20 + 13/60 ≈ 0,73, abaixo do limite de Liu & Layland para 3 tarefas (0,78). O período da baixa é o MMC dos outros dois, então todos os jobs da baixa encontram as mesmas liberações e o cenário de inversão se repete a cada 6 ms: a baixa entra na seção crítica em t = 10, a alta é liberada em t = 15 e bloqueia, e a média é liberada em t = 20 com a baixa ainda segurando R.
+
+**Escalonamento RM.** As 206 liberações da alta no trace (evento *Task Ready* dentro do SysTick) ocorreram a intervalos de 1500,0 µs ± 0,1 µs: a base de tempo por software não acumula deriva, porque `nextRelease` é absoluto. O início da execução pode atrasar alguns µs no tick em que as três tarefas são liberadas juntas, já que o `OS_tick()` demora mais. O job da média (9 ticks) mediu 0,900 ms, o que confirma a calibração do `ocupar_cpu`.
+
+**Resultados** (traces de ~310 ms, ≈ 51 ciclos):
 
 | | Sem protocolo (semáforo binário) | Com PIP (`OSMutex`) |
 |---|---|---|
-| Bloqueios da alta no recurso | 37 (motivo Semáforo) | 36 (motivo Mutex) |
-| **Tempo máximo da alta bloqueada** | **6,05 ms** | **2,41 ms** |
-| **Média rodando enquanto a alta esperava** | **até 3,63 ms** | **0 ms** |
-| `PrioInherit` / `PrioRestore` | — | 36 / 36 |
-| `DeadlineMiss` | alta: 87 | alta: 12, média: 36 |
+| Bloqueios da alta no recurso | [preencher] | 52 |
+| Tempo máximo da alta bloqueada | [preencher] | 0,853 ms |
+| Média executando enquanto a alta esperava | [preencher] | 0 ms |
+| `PrioInherit` / `PrioRestore` | — | 52 / 52 |
+| `DeadlineMiss` | [preencher] | 0 |
 
-- **Sem protocolo:** a alta bloqueia em ~2,24 ms e a média roda 3,6 ms nesse meio tempo, sem usar o recurso. Na timeline, a média aparece rodando enquanto a alta está em *Task Block (Semaforo)*: é a inversão ilimitada.
-- **Com PIP:** o `PrioInherit Task=baixa NovaPrio=20` aparece no mesmo instante em que a alta bloqueia (2,238 ms), e o `PrioRestore Task=baixa Prio=100` quando a baixa solta o recurso (4,629 ms). Em nenhum dos 36 bloqueios a média rodou: a interferência da tarefa intermediária foi eliminada, e o bloqueio máximo da alta caiu de 6,05 ms para 2,41 ms.
+Com PIP, o `PrioInherit Task=baixa NovaPrio=15` aparece no mesmo instante em que a alta bloqueia, e o `PrioRestore Task=baixa Prio=60` quando a baixa libera R. Logo após o `unlock()`, a alta passa a executar sem esperar o próximo tick (entrega direta do mutex + preempção imediata). Em nenhum dos 52 bloqueios a média executou: a interferência da tarefa intermediária foi eliminada.
 
-### Análise crítica
-
-Com PIP ainda sobram deadlines perdidos, e isso não é falha do protocolo:
-- **alta (12):** a seção crítica da baixa (20 ticks = 2 ms) é do tamanho do período da alta. O PIP **limita** o bloqueio à seção crítica, mas não deixa ele menor que ela: com B = 2 ms, R = C + B > T = 2 ms no pior caso.
-- **média (36):** com a herança, a baixa roda na frente da média enquanto segura o recurso. É o custo do PIP: o bloqueio sai da tarefa alta e vai para a de prioridade intermediária. Com 2 ms de seção crítica + 1,5 ms de execução, a média não cabe no período de 3 ms.
-
-Com uma seção crítica menor (por exemplo 15 ticks, e a média com período 25 e 12 ticks de execução) nenhum deadline seria perdido com PIP, e a inversão sem protocolo continuaria aparecendo. Mantivemos os valores acima porque eles deixam a diferença entre os dois traces mais visível.
+**Análise.** Para a alta, o bloqueio máximo é a seção crítica da baixa: R = C + B = 1 + 13 = 14 ticks ≤ T = 15, então o deadline é garantido no pior caso. No trace o bloqueio foi menor (~8,5 ticks) porque a baixa já tinha executado parte da seção crítica quando a alta foi liberada. Para a média, o teste clássico com B = 13 é pessimista: R = 9 + 13 + ⌈R/15⌉·1 = 24 > 20, e não dá garantia. Esse limite supõe que a média é liberada no início da seção crítica da baixa, o que não acontece neste conjunto: a baixa só começa a executar depois que a média termina o job. No padrão periódico real a média termina cerca de 15 ticks após ser liberada, como mostra o trace (nenhum deadline perdido). O PIP torna o bloqueio **limitado e calculável**, mas não menor que a seção crítica: com uma seção crítica maior que T − C da alta, nenhum protocolo de herança evitaria a perda de deadline.
 
 ---
 
-## Como rodar cada demo
+## 8. Como usar o kernel
 
-O `main.cpp` está com a demo da **fase 5** ativa (que também mostra o RM da fase 4).
+```cpp
+#include "miros.h"
+#include "SEGGER_SYSVIEW.h"
 
-- **Fase 5 sem protocolo:** trocar `rtos::OSMutex recursoAltaBaixa;` por `rtos::OSSemaphore recursoAltaBaixa(1U);` e, no `job_alta` e no `job_baixa`, `lock()`/`unlock()` por `wait()`/`signal()`.
-- **Fase 3 (produtor/consumidor):** descomentar o bloco do produtor/consumidor e o bloco que cria as duas threads no `main()`, e comentar a criação da `alta`, `media` e `baixa`. Os tempos de `OS_delay` são o `PERIODO_PRODUTOR` e o `PERIODO_CONSUMIDOR` (para o trace ficar legível, algo como 10 e 20 ticks).
+uint32_t stack_idleThread[512];
 
-Depois de gravar, conferir `DropCount = 0` antes de analisar o trace.
+uint32_t stack_controle[512];
+rtos::OSThread controle;
+void job_controle() {            // um job: executa e retorna
+    /* leitura, cálculo, atuação */
+}
 
----
+rtos::OSMutex recurso;           // recurso compartilhado com herança de prioridade
+rtos::OSSemaphore itens(0U);     // semáforo de contagem
 
-## Renode
+int main(void) {
+    rtos::OS_init(stack_idleThread, sizeof(stack_idleThread));
+    SEGGER_SYSVIEW_Conf();
+    SEGGER_SYSVIEW_Start();
 
-- **`nucleog474re.repl`:** clocks em 170 MHz, batendo com o `SystemClock_Config()`. RCC, PWR e FLASH são emulados por scripts Python que devolvem os bits de "pronto" que a HAL espera. A velocidade de execução das instruções é a padrão do Renode (100 MIPS), por isso o `LOOPS_POR_TICK` é um meio-termo entre a placa e o simulador.
-- **`str-renode.resc`:** carrega `Debug/trabalho-str.elf`, abre o GDB na porta 3333 e deixa `LogFunctionNames False`. Com `True` a simulação fica muito lenta, porque a idle chama `OS_onIdle()` em loop.
+    rtos::OSThread_startPeriodic(&controle, &job_controle, "controle",
+                                 10U /* período em ticks */,
+                                 stack_controle, sizeof(stack_controle));
+
+    rtos::OS_run();              // não retorna
+}
+```
+
+| Função | Uso |
+|---|---|
+| `OS_init(stk, size)` | configura o clock e a PendSV e cria a idle; chamar primeiro |
+| `OSThread_startPeriodic(...)` | tarefa periódica; prioridade RM = período |
+| `OSThread_start(...)` | thread comum com laço próprio (`while(1)`); menor prioridade |
+| `OS_run()` | inicia o SysTick e o escalonamento |
+| `OS_delay(ticks)` | bloqueia a thread pelo número de ticks |
+| `yield()` | cede a CPU sem bloquear |
+| `OSSemaphore::wait()` / `signal()` | sinalização e contagem |
+| `OSMutex::lock()` / `unlock()` | exclusão mútua com herança de prioridade |
+
+Regras de uso:
+- no máximo 32 threads além da idle;
+- as primitivas do kernel são chamadas apenas a partir de threads, nunca de ISRs;
+- `lock()` e `unlock()` de um mutex são feitos pela mesma thread, e cada thread segura um mutex por vez;
+- um job periódico deve retornar; ele não pode terminar a thread.
+
+### Reproduzindo os experimentos
+
+- **PIP:** `main.cpp` como está (`rtos::OSMutex recursoAltaBaixa;`).
+- **Sem protocolo:** trocar por `rtos::OSSemaphore recursoAltaBaixa(1U);` e, em `job_alta` e `job_baixa`, `lock()`/`unlock()` por `wait()`/`signal()`.
+- **Produtor/consumidor:** descomentar o bloco do produtor/consumidor e a criação das duas threads no `main()`, e comentar a criação de `alta`, `media` e `baixa`.
+- **Calibração:** `LOOPS_POR_TICK` é o número de voltas do `ocupar_cpu` em um tick. Vale **660** no Renode e cerca de **900** na placa a 170 MHz. Para recalibrar, medir no trace a duração de um job sem preempção e aplicar: novo valor = valor atual × tempo esperado / tempo medido.
+
+### Renode
+
+- `nucleog474re.repl`: clocks em 170 MHz, como no `SystemClock_Config()`. RCC, PWR e FLASH são emulados por scripts Python que devolvem os bits de "pronto" esperados pela HAL.
+- `str-renode.resc`: carrega `Debug/trabalho-str.elf`, abre o servidor GDB na porta 3333 e mantém `LogFunctionNames False` (com `True` a simulação fica muito lenta).
 
 ---
 

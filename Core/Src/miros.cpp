@@ -150,9 +150,10 @@ void OS_delay(uint32_t ticks) {
 
 void yield(void) {
 	SEGGER_SYSVIEW_RecordVoid(TRACE_ID_YIELD);
-	__asm volatile ("cpsid i");
+	uint32_t primask = __get_PRIMASK();
+	__disable_irq();
     OS_sched();
-    __asm volatile ("cpsie i");
+    __set_PRIMASK(primask);
  }
 
 void OS_periodicLoop() {
