@@ -78,13 +78,13 @@ void main_consumidor(){
 }
 */
 
-#define PERIODO_ALTA   20U
-#define PERIODO_MEDIA  30U
-#define PERIODO_BAIXA 100U
+#define PERIODO_ALTA   15U
+#define PERIODO_MEDIA  20U
+#define PERIODO_BAIXA  60U
 
 rtos::OSMutex recursoAltaBaixa;
 
-#define LOOPS_POR_TICK 800U
+#define LOOPS_POR_TICK 660U
 
 static void ocupar_cpu(uint32_t ticks) {
 	for (volatile uint32_t i = 0U; i < (ticks * LOOPS_POR_TICK); i++) {
@@ -103,14 +103,14 @@ void job_alta(){
 uint32_t stack_media[512];
 rtos::OSThread media;
 void job_media(){
-	ocupar_cpu(5U);     /* nao usa o recurso: so ocupa a CPU */
+	ocupar_cpu(9U);     /* nao usa o recurso: so ocupa a CPU */
 }
 
 uint32_t stack_baixa[512];
 rtos::OSThread baixa;
 void job_baixa(){
 	recursoAltaBaixa.lock();
-	ocupar_cpu(7U);     /* secao critica longa */
+	ocupar_cpu(13U);    /* secao critica longa */
 	recursoAltaBaixa.unlock();
 }
 
