@@ -308,15 +308,17 @@ U = 1/15 + 9/20 + 13/60 ≈ 0,73, abaixo do limite de Liu & Layland para 3 taref
 
 **Escalonamento RM.** As 206 liberações da alta no trace (evento *Task Ready* dentro do SysTick) ocorreram a intervalos de 1500,0 µs ± 0,1 µs: a base de tempo por software não acumula deriva, porque `nextRelease` é absoluto. O início da execução pode atrasar alguns µs no tick em que as três tarefas são liberadas juntas, já que o `OS_tick()` demora mais. O job da média (9 ticks) mediu 0,900 ms, o que confirma a calibração do `ocupar_cpu`.
 
-**Resultados** (traces de ~310 ms, ≈ 51 ciclos):
+**Resultados** (traces de ~310–320 ms, ≈ 52 ciclos cada):
 
 | | Sem protocolo (semáforo binário) | Com PIP (`OSMutex`) |
 |---|---|---|
-| Bloqueios da alta no recurso | [preencher] | 52 |
-| Tempo máximo da alta bloqueada | [preencher] | 0,853 ms |
-| Média executando enquanto a alta esperava | [preencher] | 0 ms |
+| Bloqueios da alta no recurso | 54 (motivo Semáforo) | 52 (motivo Mutex) |
+| Tempo máximo da alta bloqueada | 1,756 ms | 0,853 ms |
+| Média executando enquanto a alta esperava | 0,904 ms (o job inteiro) | 0 ms |
 | `PrioInherit` / `PrioRestore` | — | 52 / 52 |
-| `DeadlineMiss` | [preencher] | 0 |
+| `DeadlineMiss` | alta: 54 (um por ciclo) | 0 |
+
+Sem protocolo, em todos os 54 ciclos a média é liberada com a alta bloqueada e executa o job inteiro (0,904 ms) antes de a baixa conseguir liberar R. A alta fica bloqueada 1,756 ms e perde o deadline em todo ciclo: é a inversão de prioridade, com a tarefa intermediária atrasando a de maior prioridade sem usar o recurso.
 
 Com PIP, o `PrioInherit Task=baixa NovaPrio=15` aparece no mesmo instante em que a alta bloqueia, e o `PrioRestore Task=baixa Prio=60` quando a baixa libera R. Logo após o `unlock()`, a alta passa a executar sem esperar o próximo tick (entrega direta do mutex + preempção imediata). Em nenhum dos 52 bloqueios a média executou: a interferência da tarefa intermediária foi eliminada.
 
