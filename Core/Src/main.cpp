@@ -25,7 +25,7 @@
 #include "miros.h"
 #include "SEGGER_SYSVIEW.h"
 
-/*struct produto{
+struct produto{
 	uint16_t id;
 };
 
@@ -44,7 +44,6 @@ uint32_t stack_produtor[512];
 rtos::OSThread produtor;
 void main_produtor(){
 	static uint16_t proximo = 0;
-	while (1) {
 		produto item;
 		item.id = proximo++;
 		BloqProdutor.wait();
@@ -53,42 +52,36 @@ void main_produtor(){
 		head = (head+1) % CAPACIDADE;
 		MutexFila.signal();
 		BloqConsumidor.signal();
-		rtos::OS_delay(PERIODO_PRODUTOR);
-	}
 }
 
 uint32_t stack_consumidor[512];
 rtos::OSThread consumidor;
 void main_consumidor(){
 	static uint16_t esperado = 0;
-	while (1) {
-		produto item;
-		BloqConsumidor.wait();
-		MutexFila.wait();
-		item = fila[tail];
-		tail = (tail+1)% CAPACIDADE;
-		MutexFila.signal();
-		BloqProdutor.signal();
-		if (item.id != esperado) {
-			erros++;
-		}
-		esperado = item.id + 1;
-		rtos::OS_delay(PERIODO_CONSUMIDOR);
+	produto item;
+	BloqConsumidor.wait();
+	MutexFila.wait();
+	item = fila[tail];
+	tail = (tail+1)% CAPACIDADE;
+	MutexFila.signal();
+	BloqProdutor.signal();
+	if (item.id != esperado) {
+		erros++;
 	}
+	esperado = item.id + 1;
 }
-*/
 
+/*
 #define PERIODO_ALTA   15U
 #define PERIODO_MEDIA  20U
 #define PERIODO_BAIXA  60U
 
 rtos::OSMutex recursoAltaBaixa;
 
-#define LOOPS_POR_TICK 660U
+#define LOOPS_POR_TICK 900U
 
 static void ocupar_cpu(uint32_t ticks) {
 	for (volatile uint32_t i = 0U; i < (ticks * LOOPS_POR_TICK); i++) {
-		/* so gasta tempo */
 	}
 }
 
@@ -96,24 +89,24 @@ uint32_t stack_alta[512];
 rtos::OSThread alta;
 void job_alta(){
 	recursoAltaBaixa.lock();
-	ocupar_cpu(1U);      /* secao critica curta */
+	ocupar_cpu(1U);
 	recursoAltaBaixa.unlock();
 }
 
 uint32_t stack_media[512];
 rtos::OSThread media;
 void job_media(){
-	ocupar_cpu(9U);     /* nao usa o recurso: so ocupa a CPU */
+	ocupar_cpu(9U);
 }
 
 uint32_t stack_baixa[512];
 rtos::OSThread baixa;
 void job_baixa(){
 	recursoAltaBaixa.lock();
-	ocupar_cpu(13U);    /* secao critica longa */
+	ocupar_cpu(13U);
 	recursoAltaBaixa.unlock();
 }
-
+*/
 uint32_t stack_idleThread[512];
 
 int main(void)
@@ -122,19 +115,21 @@ int main(void)
 
 	  SEGGER_SYSVIEW_Conf(); /* Configure and initialize SystemView */
 	  SEGGER_SYSVIEW_Start(); // Start SystemView
-	  /*
-	  rtos::OSThread_start(&produtor,
+
+	  rtos::OSThread_startPeriodic(&produtor,
 			  &main_produtor,
 			  "produtor",
+			  PERIODO_PRODUTOR,
 			  stack_produtor,
 			  sizeof(stack_produtor));
 
-	  rtos::OSThread_start(&consumidor,
+	  rtos::OSThread_startPeriodic(&consumidor,
 			  &main_consumidor,
 			  "consumidor",
+			  PERIODO_CONSUMIDOR,
 			  stack_consumidor,
 			  sizeof(stack_consumidor));
-	  */
+	  /*
 
 	  rtos::OSThread_startPeriodic(&alta,  &job_alta,  "alta",
 			  PERIODO_ALTA,  stack_alta,  sizeof(stack_alta));

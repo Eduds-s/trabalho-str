@@ -288,8 +288,7 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
+   __HAL_RCC_PWR_CLK_ENABLE();
 
   HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1_BOOST);
 
@@ -327,6 +326,9 @@ void SystemClock_Config(void)
 }
 
 void OS_init(void *stkSto, uint32_t stkSize) {
+	/* HAL_Init define a prioridade do tick da HAL (uwTickPrio). Sem ele o HAL_RCC_OscConfig
+	 * retorna erro antes de ligar o PLL e a placa fica no HSI de 16 MHz */
+	HAL_Init();
 	SystemClock_Config();
 	SysTick->CTRL = 0U;
 	SystemCoreClockUpdate();
